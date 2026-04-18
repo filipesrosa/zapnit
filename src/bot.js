@@ -6,8 +6,21 @@ const {
 } = require('@whiskeysockets/baileys')
 const qrcode = require('qrcode-terminal')
 const pino = require('pino')
+const EventEmitter = require('events')
 
 const logger = pino({ level: 'silent' })
+
+const botEvents = new EventEmitter()
+let currentSock = null
+let connectionStatus = 'disconnected' // disconnected | qr | connected
+
+function getStatus() {
+  return connectionStatus
+}
+
+function getSock() {
+  return currentSock
+}
 
 async function connectToWhatsApp() {
   const { state, saveCreds } = await useMultiFileAuthState('auth_info')
@@ -20,16 +33,23 @@ async function connectToWhatsApp() {
     printQRInTerminal: false,
   })
 
+  currentSock = sock
+
   sock.ev.on('connection.update', (update) => {
     const { connection, lastDisconnect, qr } = update
 
     if (qr) {
+      connectionStatus = 'qr'
       console.clear()
-      console.log('=== ZAPNIT - Escaneie o QR Code abaixo ===\n')
+      console.log('=== ZAPNIT - Escaneie o QR Code ===\n')
       qrcode.generate(qr, { small: true })
+      botEvents.emit('qr', qr)
     }
 
     if (connection === 'close') {
+      connectionStatus = 'disconnected'
+      botEvents.emit('status', 'disconnected')
+
       const shouldReconnect =
         lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut
 
@@ -41,7 +61,9 @@ async function connectToWhatsApp() {
     }
 
     if (connection === 'open') {
+      connectionStatus = 'connected'
       console.log('\n=== Conectado ao WhatsApp! ===\n')
+      botEvents.emit('status', 'connected')
     }
   })
 
@@ -62,7 +84,6 @@ async function connectToWhatsApp() {
       if (!text) continue
 
       console.log(`[${from}] ${text}`)
-
       await handleMessage(sock, from, text)
     }
   })
@@ -83,7 +104,6 @@ async function handleMessage(sock, from, text) {
     return
   }
 
-  // fallback
   await sendText(sock, from, `Você disse: ${text}`)
 }
 
@@ -91,4 +111,4 @@ async function sendText(sock, to, text) {
   await sock.sendMessage(to, { text })
 }
 
-module.exports = { connectToWhatsApp, sendText }
+module.exports = { connectToWhatsApp, sendText, botEvents, getStatus, getSock }

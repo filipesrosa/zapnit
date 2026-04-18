@@ -1,0 +1,238 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Zapnit</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: monospace;
+      background: #111;
+      color: #eee;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 40px 16px;
+    }
+
+    h1 { font-size: 2rem; margin-bottom: 8px; color: #25d366; }
+
+    #status-bar {
+      font-size: 0.85rem;
+      padding: 4px 12px;
+      border-radius: 4px;
+      margin-bottom: 32px;
+      background: #222;
+      border: 1px solid #333;
+    }
+    #status-bar.disconnected { color: #f55; border-color: #f55; }
+    #status-bar.qr           { color: #fa0; border-color: #fa0; }
+    #status-bar.connected    { color: #25d366; border-color: #25d366; }
+
+    /* QR section */
+    #qr-section {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 40px;
+    }
+
+    #qr-section p { color: #aaa; font-size: 0.85rem; }
+
+    #qr-img {
+      width: 220px;
+      height: 220px;
+      background: #222;
+      border: 2px dashed #333;
+      border-radius: 8px;
+      object-fit: contain;
+      display: none;
+    }
+
+    #qr-placeholder {
+      width: 220px;
+      height: 220px;
+      background: #222;
+      border: 2px dashed #333;
+      border-radius: 8px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: #555;
+      font-size: 0.8rem;
+      text-align: center;
+      padding: 16px;
+    }
+
+    /* Send form */
+    #send-section {
+      width: 100%;
+      max-width: 420px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    #send-section h2 { font-size: 1rem; color: #aaa; margin-bottom: 4px; }
+
+    label { font-size: 0.8rem; color: #888; display: block; margin-bottom: 4px; }
+
+    input, textarea {
+      width: 100%;
+      background: #1a1a1a;
+      border: 1px solid #333;
+      color: #eee;
+      font-family: monospace;
+      font-size: 0.95rem;
+      padding: 10px 12px;
+      border-radius: 4px;
+      outline: none;
+      transition: border-color 0.2s;
+    }
+    input:focus, textarea:focus { border-color: #25d366; }
+
+    textarea { resize: vertical; min-height: 80px; }
+
+    button {
+      background: #25d366;
+      color: #111;
+      font-family: monospace;
+      font-size: 1rem;
+      font-weight: bold;
+      padding: 12px;
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+      transition: opacity 0.2s;
+    }
+    button:hover { opacity: 0.85; }
+    button:disabled { opacity: 0.4; cursor: not-allowed; }
+
+    #feedback {
+      font-size: 0.85rem;
+      text-align: center;
+      min-height: 20px;
+    }
+    #feedback.ok  { color: #25d366; }
+    #feedback.err { color: #f55; }
+  </style>
+</head>
+<body>
+
+  <h1>Zapnit</h1>
+  <div id="status-bar" class="disconnected">● desconectado</div>
+
+  <div id="qr-section">
+    <p>Escaneie o QR Code com o WhatsApp</p>
+    <div id="qr-placeholder">Aguardando QR Code...</div>
+    <img id="qr-img" alt="QR Code" />
+  </div>
+
+  <div id="send-section">
+    <h2>Enviar mensagem</h2>
+
+    <div>
+      <label for="phone">Telefone (com DDD e DDI)</label>
+      <input id="phone" type="text" placeholder="5511999999999" />
+    </div>
+
+    <div>
+      <label for="message">Mensagem</label>
+      <textarea id="message" placeholder="Digite sua mensagem..."></textarea>
+    </div>
+
+    <button id="send-btn" disabled>Enviar</button>
+    <div id="feedback"></div>
+  </div>
+
+  <script>
+    const statusBar  = document.getElementById('status-bar')
+    const qrImg      = document.getElementById('qr-img')
+    const qrHolder   = document.getElementById('qr-placeholder')
+    const sendBtn    = document.getElementById('send-btn')
+    const feedback   = document.getElementById('feedback')
+
+    let connected = false
+
+    function setStatus(status) {
+      connected = status === 'connected'
+      sendBtn.disabled = !connected
+
+      statusBar.className = status
+      const labels = {
+        disconnected: '● desconectado',
+        qr:           '● aguardando leitura do QR...',
+        connected:    '● conectado',
+      }
+      statusBar.textContent = labels[status] || status
+    }
+
+    // SSE — recebe QR e status em tempo real
+    const evtSource = new EventSource('/events')
+
+    evtSource.addEventListener('qr', (e) => {
+      const { qr } = JSON.parse(e.data)
+      qrImg.src = qr
+      qrImg.style.display = 'block'
+      qrHolder.style.display = 'none'
+      setStatus('qr')
+    })
+
+    evtSource.addEventListener('status', (e) => {
+      const { status } = JSON.parse(e.data)
+      setStatus(status)
+
+      if (status === 'connected') {
+        qrImg.style.display = 'none'
+        qrHolder.textContent = 'Conectado! QR não necessário.'
+        qrHolder.style.display = 'flex'
+      }
+    })
+
+    // Envio
+    document.getElementById('send-btn').addEventListener('click', async () => {
+      const phone   = document.getElementById('phone').value.trim()
+      const message = document.getElementById('message').value.trim()
+
+      if (!phone || !message) {
+        showFeedback('Preencha telefone e mensagem.', 'err')
+        return
+      }
+
+      sendBtn.disabled = true
+      showFeedback('Enviando...', '')
+
+      try {
+        const res = await fetch('/send', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ phone, message }),
+        })
+
+        const data = await res.json()
+
+        if (res.ok) {
+          showFeedback('Mensagem enviada!', 'ok')
+          document.getElementById('message').value = ''
+        } else {
+          showFeedback(data.error || 'Erro ao enviar.', 'err')
+        }
+      } catch {
+        showFeedback('Erro de conexão com o servidor.', 'err')
+      } finally {
+        sendBtn.disabled = !connected
+      }
+    })
+
+    function showFeedback(msg, type) {
+      feedback.textContent = msg
+      feedback.className = type
+    }
+  </script>
+
+</body>
+</html>
