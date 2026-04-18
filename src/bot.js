@@ -4,7 +4,6 @@ const {
   DisconnectReason,
   fetchLatestBaileysVersion,
 } = require('@whiskeysockets/baileys')
-const qrcode = require('qrcode-terminal')
 const pino = require('pino')
 const EventEmitter = require('events')
 
@@ -12,7 +11,7 @@ const logger = pino({ level: 'silent' })
 
 const botEvents = new EventEmitter()
 let currentSock = null
-let connectionStatus = 'disconnected' // disconnected | qr | connected
+let connectionStatus = 'disconnected'
 
 function getStatus() {
   return connectionStatus
@@ -22,15 +21,29 @@ function getSock() {
   return currentSock
 }
 
+async function getVersion() {
+  try {
+    const { version } = await fetchLatestBaileysVersion()
+    console.log('[bot] versão Baileys:', version)
+    return version
+  } catch {
+    // fallback se não tiver acesso à rede para buscar a versão mais recente
+    console.warn('[bot] fetchLatestBaileysVersion falhou, usando versão fallback')
+    return [2, 3000, 1015901307]
+  }
+}
+
 async function connectToWhatsApp() {
   const { state, saveCreds } = await useMultiFileAuthState('auth_info')
-  const { version } = await fetchLatestBaileysVersion()
+  const version = await getVersion()
+
+  console.log('[bot] inicializando socket...')
 
   const sock = makeWASocket({
     version,
     logger,
     auth: state,
-    printQRInTerminal: false,
+    printQRInTerminal: true,
   })
 
   currentSock = sock
@@ -40,9 +53,7 @@ async function connectToWhatsApp() {
 
     if (qr) {
       connectionStatus = 'qr'
-      console.clear()
-      console.log('=== ZAPNIT - Escaneie o QR Code ===\n')
-      qrcode.generate(qr, { small: true })
+      console.log('[bot] QR gerado, emitindo evento...')
       botEvents.emit('qr', qr)
     }
 
@@ -53,16 +64,16 @@ async function connectToWhatsApp() {
       const shouldReconnect =
         lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut
 
-      console.log('Conexão encerrada. Reconectando:', shouldReconnect)
+      console.log('[bot] conexão encerrada. Reconectando:', shouldReconnect)
 
       if (shouldReconnect) {
-        connectToWhatsApp()
+        connectToWhatsApp().catch(console.error)
       }
     }
 
     if (connection === 'open') {
       connectionStatus = 'connected'
-      console.log('\n=== Conectado ao WhatsApp! ===\n')
+      console.log('[bot] conectado ao WhatsApp!')
       botEvents.emit('status', 'connected')
     }
   })
@@ -83,7 +94,7 @@ async function connectToWhatsApp() {
 
       if (!text) continue
 
-      console.log(`[${from}] ${text}`)
+      console.log(`[bot] mensagem de ${from}: ${text}`)
       await handleMessage(sock, from, text)
     }
   })

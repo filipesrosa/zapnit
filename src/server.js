@@ -47,6 +47,15 @@ app.get('/events', (req, res) => {
   req.on('close', () => sseClients.delete(res))
 })
 
+// Debug — acessar no browser para ver estado atual
+app.get('/debug', (req, res) => {
+  res.json({
+    status: getStatus(),
+    sseClients: sseClients.size,
+    hasQrCached: !!lastQrDataUrl,
+  })
+})
+
 // Envio de mensagem
 app.post('/send', async (req, res) => {
   const { phone, message } = req.body
