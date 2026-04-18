@@ -9,6 +9,7 @@ app.use(express.static(path.join(__dirname, 'public')))
 
 // SSE clients
 const sseClients = new Set()
+let lastQrDataUrl = null  // cache do último QR para novos clientes que conectam tarde
 
 function broadcast(event, data) {
   const payload = `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`
@@ -18,11 +19,12 @@ function broadcast(event, data) {
 }
 
 botEvents.on('qr', async (qrString) => {
-  const dataUrl = await QRCode.toDataURL(qrString)
-  broadcast('qr', { qr: dataUrl })
+  lastQrDataUrl = await QRCode.toDataURL(qrString)
+  broadcast('qr', { qr: lastQrDataUrl })
 })
 
 botEvents.on('status', (status) => {
+  if (status === 'connected') lastQrDataUrl = null
   broadcast('status', { status })
 })
 
@@ -35,6 +37,11 @@ app.get('/events', (req, res) => {
 
   // Manda status atual imediatamente
   res.write(`event: status\ndata: ${JSON.stringify({ status: getStatus() })}\n\n`)
+
+  // Se já havia QR gerado antes do cliente conectar, envia agora
+  if (lastQrDataUrl && getStatus() === 'qr') {
+    res.write(`event: qr\ndata: ${JSON.stringify({ qr: lastQrDataUrl })}\n\n`)
+  }
 
   sseClients.add(res)
   req.on('close', () => sseClients.delete(res))
