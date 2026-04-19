@@ -6,11 +6,16 @@ services:
     environment:
       POSTGRES_DB: zapnit
       POSTGRES_USER: zapnit
-      POSTGRES_PASSWORD: zapnit
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-zapnit}
     ports:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U zapnit"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   redis:
     image: redis:7-alpine
@@ -20,7 +25,44 @@ services:
       - "6379:6379"
     volumes:
       - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  api:
+    build:
+      context: ./api
+      dockerfile: Dockerfile
+    container_name: zapnit-api
+    restart: unless-stopped
+    env_file: ./api/.env
+    ports:
+      - "3100:3100"
+    volumes:
+      - baileys_sessions:/app/sessions
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  app:
+    build:
+      context: ./app
+      dockerfile: Dockerfile
+      args:
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-https://api.zapnit.frsolutions.pro}
+    container_name: zapnit-app
+    restart: unless-stopped
+    env_file: ./app/.env
+    ports:
+      - "3000:3000"
+    depends_on:
+      - api
 
 volumes:
   postgres_data:
   redis_data:
+  baileys_sessions:

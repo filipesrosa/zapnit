@@ -159,6 +159,7 @@ model User {
   name         String
   email        String            @unique
   passwordHash String            @map("password_hash")
+  clientToken  String            @unique @default(uuid()) @map("client_token")
   createdAt    DateTime          @default(now()) @map("created_at")
   updatedAt    DateTime          @updatedAt @map("updated_at")
 
@@ -170,7 +171,6 @@ model User {
 model BaileysInstance {
   id          String    @id
   userId      String?   @map("user_id")
-  clientToken String    @unique @map("client_token")
   status      String    @default("disconnected")
   waNumber    String?   @map("wa_number")
   waName      String?   @map("wa_name")

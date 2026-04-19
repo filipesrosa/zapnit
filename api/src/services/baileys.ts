@@ -12,7 +12,6 @@ import { EventEmitter } from 'events'
 import { rmSync } from 'fs'
 import { join } from 'path'
 import { prisma } from '../db.js'
-import { randomUUID } from 'crypto'
 
 const silentLogger = pino({ level: 'silent' })
 
@@ -21,7 +20,6 @@ export type InstanceStatus = 'disconnected' | 'qr' | 'connected'
 export interface InstanceInfo {
   id: string
   userId: string | null
-  clientToken: string
   status: InstanceStatus
   qrDataUrl: string | null
   waNumber: string | null
@@ -32,7 +30,6 @@ export interface InstanceInfo {
 class BaileysInstance extends EventEmitter {
   readonly id: string
   userId: string | null
-  readonly clientToken: string
   status: InstanceStatus = 'disconnected'
   qrDataUrl: string | null = null
   waNumber: string | null = null
@@ -43,11 +40,10 @@ class BaileysInstance extends EventEmitter {
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null
   private readonly authDir: string
 
-  constructor(id: string, userId: string | null = null, clientToken: string = randomUUID()) {
+  constructor(id: string, userId: string | null = null) {
     super()
     this.id = id
     this.userId = userId
-    this.clientToken = clientToken
     this.authDir = join(process.cwd(), 'sessions', id)
   }
 
@@ -147,7 +143,6 @@ class BaileysInstance extends EventEmitter {
     return {
       id: this.id,
       userId: this.userId,
-      clientToken: this.clientToken,
       status: this.status,
       qrDataUrl: this.qrDataUrl,
       waNumber: this.waNumber,
@@ -163,7 +158,7 @@ class BaileysManager {
   async init() {
     const rows = await prisma.baileysInstance.findMany()
     for (const row of rows) {
-      const instance = new BaileysInstance(row.id, row.userId, row.clientToken)
+      const instance = new BaileysInstance(row.id, row.userId)
       this.instances.set(row.id, instance)
       this._watch(instance)
       instance.connect().catch(err => console.error(`[baileys] reconnect error ${row.id}`, err))
@@ -172,11 +167,10 @@ class BaileysManager {
 
   async create(id: string, userId: string | null = null): Promise<BaileysInstance> {
     if (this.instances.has(id)) return this.instances.get(id)!
-    const clientToken = randomUUID()
-    const instance = new BaileysInstance(id, userId, clientToken)
+    const instance = new BaileysInstance(id, userId)
     this.instances.set(id, instance)
     this._watch(instance)
-    await prisma.baileysInstance.create({ data: { id, userId, clientToken } })
+    await prisma.baileysInstance.create({ data: { id, userId } })
     return instance
   }
 
@@ -214,11 +208,10 @@ class BaileysManager {
     return instance
   }
 
-  getByToken(id: string, clientToken: string): BaileysInstance | undefined {
-    const instance = this.instances.get(id)
-    if (!instance) return undefined
-    if (instance.clientToken !== clientToken) return undefined
-    return instance
+  async getByUserToken(id: string, clientToken: string): Promise<BaileysInstance | undefined> {
+    const user = await prisma.user.findUnique({ where: { clientToken } })
+    if (!user) return undefined
+    return this.getForUser(id, user.id)
   }
 
   async remove(id: string): Promise<void> {

@@ -1,6 +1,8 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
+import { apiFetch } from "../../../lib/api";
+import { getToken, getUser } from "../../../lib/auth";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -32,6 +34,7 @@ type BaileysInstance = {
   waName: string | null;
   connectedAt: string | null;
 };
+
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -102,7 +105,9 @@ function QrModal({
   const [status, setStatus] = useState<string>("connecting");
 
   useEffect(() => {
-    const es = new EventSource(`${API}/baileys/instances/${instanceId}/events`);
+    const token = getToken();
+    const qs = token ? `?token=${encodeURIComponent(token)}` : "";
+    const es = new EventSource(`${API}/instances/${instanceId}/events${qs}`);
 
     es.addEventListener("status", (e) => {
       const { status } = JSON.parse(e.data);
@@ -381,9 +386,8 @@ export default function PhonesPage() {
 
   const fetchInstances = useCallback(async () => {
     try {
-      const res = await fetch(`${API}/baileys/instances`);
-      if (!res.ok) return;
-      setInstances(await res.json());
+      const data = await apiFetch<BaileysInstance[]>("/instances");
+      setInstances(data);
     } catch (_) {}
   }, []);
 
@@ -397,8 +401,7 @@ export default function PhonesPage() {
   const createInstance = async () => {
     setCreatingInstance(true);
     try {
-      const res = await fetch(`${API}/baileys/instances`, { method: "POST" });
-      const { id } = await res.json();
+      const { id } = await apiFetch<{ id: string }>("/instances", { method: "POST" });
       setQrInstanceId(id);
       await fetchInstances();
     } finally {
@@ -407,7 +410,7 @@ export default function PhonesPage() {
   };
 
   const disconnectInstance = async (id: string) => {
-    await fetch(`${API}/baileys/instances/${id}`, { method: "DELETE" });
+    await apiFetch(`/instances/${id}`, { method: "DELETE" });
     setInstances((prev) => prev.filter((i) => i.id !== id));
   };
 
@@ -600,6 +603,24 @@ export default function PhonesPage() {
       {/* ── QR CODE TAB ── */}
       {tab === "qr" && (
         <div className="space-y-4">
+          {/* Client Token do usuário */}
+          {(() => {
+            const user = getUser();
+            if (!user?.clientToken) return null;
+            return (
+              <div className="glass-card rounded-2xl p-4 border border-brand-500/15">
+                <p className="text-xs font-medium text-slate-500 dark:text-slate-400 mb-2">
+                  Client Token — use no header <code className="font-mono">X-Client-Token</code> para enviar mensagens via API
+                </p>
+                <div className="flex items-center gap-2 bg-slate-50 dark:bg-dark-800/60 rounded-xl px-3.5 py-2.5 border border-slate-100 dark:border-transparent">
+                  <code className="text-xs text-brand-500 dark:text-brand-400 font-mono flex-1 truncate">
+                    {user.clientToken}
+                  </code>
+                  <CopyButton value={user.clientToken} />
+                </div>
+              </div>
+            );
+          })()}
           {instances.length === 0 ? (
             <div className="glass-card rounded-2xl p-12 flex flex-col items-center gap-4 text-center">
               <div className="w-14 h-14 rounded-2xl bg-brand-500/10 border border-brand-500/20 flex items-center justify-center">

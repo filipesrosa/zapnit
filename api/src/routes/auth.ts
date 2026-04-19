@@ -1,5 +1,6 @@
 import type { FastifyInstance } from 'fastify'
 import { prisma } from '../db.js'
+import { authenticateUser } from '../middleware/auth.js'
 import bcrypt from 'bcryptjs'
 
 interface TokenBody {
@@ -84,7 +85,7 @@ export default async function authRoutes(app: FastifyInstance): Promise<void> {
 
     return reply.status(201).send({
       token,
-      user: { id: user.id, name: user.name, email: user.email }
+      user: { id: user.id, name: user.name, email: user.email, clientToken: user.clientToken }
     })
   })
 
@@ -117,7 +118,17 @@ export default async function authRoutes(app: FastifyInstance): Promise<void> {
 
     return reply.send({
       token,
-      user: { id: user.id, name: user.name, email: user.email }
+      user: { id: user.id, name: user.name, email: user.email, clientToken: user.clientToken }
+    })
+  })
+
+  // GET /auth/me — retorna perfil do usuário autenticado
+  await app.register(async (auth) => {
+    auth.addHook('preHandler', authenticateUser)
+
+    auth.get('/me', async (req) => {
+      const user = await prisma.user.findUniqueOrThrow({ where: { id: req.authUser.id } })
+      return { id: user.id, name: user.name, email: user.email, clientToken: user.clientToken }
     })
   })
 }

@@ -2,6 +2,7 @@ export interface AuthUser {
   id: string
   name: string
   email: string
+  clientToken: string
 }
 
 export const getToken = (): string | null =>

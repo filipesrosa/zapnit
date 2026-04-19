@@ -26,9 +26,7 @@ const app = Fastify({
 
 // Plugins
 await app.register(fastifyCors, {
-  origin: (process.env.CORS_ORIGINS ?? 'http://localhost:3000')
-    .split(',')
-    .map(o => o.trim()),
+  origin: true,
   credentials: true
 })
 
