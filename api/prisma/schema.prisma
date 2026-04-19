@@ -1,0 +1,184 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Plan {
+  id           String   @id @default(cuid())
+  name         String
+  slug         String   @unique
+  monthlyQuota Int      @map("monthly_quota")
+  price        Decimal  @db.Decimal(10, 2)
+  features     Json?
+  isActive     Boolean  @default(true) @map("is_active")
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  tenants Tenant[]
+
+  @@map("plans")
+}
+
+model Tenant {
+  id           String   @id @default(cuid())
+  name         String
+  clientId     String   @unique @map("client_id")
+  clientSecret String   @map("client_secret")
+  isInternal   Boolean  @default(false) @map("is_internal")
+  planId       String   @map("plan_id")
+  monthlyQuota Int      @map("monthly_quota")
+  usedMessages Int      @default(0) @map("used_messages")
+  quotaResetAt DateTime @map("quota_reset_at")
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  plan          Plan     @relation(fields: [planId], references: [id])
+  phoneNumbers  PhoneNumber[]
+  messages      Message[]
+  contacts      Contact[]
+  conversations Conversation[]
+
+  @@map("tenants")
+}
+
+model PhoneNumber {
+  id              String   @id @default(cuid())
+  tenantId        String   @map("tenant_id")
+  phoneNumberId   String   @unique @map("phone_number_id")  // Meta phone number ID
+  displayNumber   String   @map("display_number")
+  wabaId          String   @map("waba_id")                  // WhatsApp Business Account ID
+  accessToken     String   @map("access_token")
+  webhookVerifyToken String @map("webhook_verify_token")
+  isActive        Boolean  @default(true) @map("is_active")
+  botEnabled      Boolean  @default(false) @map("bot_enabled")
+  botContext      String?  @map("bot_context")
+  botTone         String?  @map("bot_tone")
+  createdAt       DateTime @default(now()) @map("created_at")
+
+  tenant        Tenant         @relation(fields: [tenantId], references: [id])
+  messages      Message[]
+  conversations Conversation[]
+
+  @@map("phone_numbers")
+}
+
+model Contact {
+  id          String   @id @default(cuid())
+  tenantId    String   @map("tenant_id")
+  waId        String   @map("wa_id")   // WhatsApp phone number
+  name        String?
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  tenant        Tenant         @relation(fields: [tenantId], references: [id])
+  conversations Conversation[]
+  messages      Message[]
+
+  @@unique([tenantId, waId])
+  @@map("contacts")
+}
+
+model Conversation {
+  id            String   @id @default(cuid())
+  tenantId      String   @map("tenant_id")
+  phoneNumberId String   @map("phone_number_id")
+  contactId     String   @map("contact_id")
+  status        ConvStatus @default(OPEN)
+  metadata      Json?
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+
+  tenant      Tenant      @relation(fields: [tenantId], references: [id])
+  phoneNumber PhoneNumber @relation(fields: [phoneNumberId], references: [id])
+  contact     Contact     @relation(fields: [contactId], references: [id])
+  messages    Message[]
+
+  @@map("conversations")
+}
+
+model Message {
+  id             String      @id @default(cuid())
+  tenantId       String      @map("tenant_id")
+  phoneNumberId  String      @map("phone_number_id")
+  contactId      String?     @map("contact_id")
+  conversationId String?     @map("conversation_id")
+  waMessageId    String?     @unique @map("wa_message_id")
+  direction      Direction
+  type           MessageType @default(TEXT)
+  content        String
+  status         MsgStatus   @default(PENDING)
+  errorMessage   String?     @map("error_message")
+  metadata       Json?
+  sentAt         DateTime?   @map("sent_at")
+  deliveredAt    DateTime?   @map("delivered_at")
+  readAt         DateTime?   @map("read_at")
+  createdAt      DateTime    @default(now()) @map("created_at")
+
+  tenant       Tenant        @relation(fields: [tenantId], references: [id])
+  phoneNumber  PhoneNumber   @relation(fields: [phoneNumberId], references: [id])
+  contact      Contact?      @relation(fields: [contactId], references: [id])
+  conversation Conversation? @relation(fields: [conversationId], references: [id])
+
+  @@map("messages")
+}
+
+enum ConvStatus {
+  OPEN
+  RESOLVED
+  BOT
+}
+
+enum Direction {
+  INBOUND
+  OUTBOUND
+}
+
+enum MessageType {
+  TEXT
+  IMAGE
+  DOCUMENT
+  AUDIO
+  VIDEO
+  TEMPLATE
+}
+
+enum MsgStatus {
+  PENDING
+  QUEUED
+  SENT
+  DELIVERED
+  READ
+  FAILED
+}
+
+model User {
+  id           String            @id @default(cuid())
+  name         String
+  email        String            @unique
+  passwordHash String            @map("password_hash")
+  createdAt    DateTime          @default(now()) @map("created_at")
+  updatedAt    DateTime          @updatedAt @map("updated_at")
+
+  instances BaileysInstance[]
+
+  @@map("users")
+}
+
+model BaileysInstance {
+  id          String    @id
+  userId      String?   @map("user_id")
+  clientToken String    @unique @map("client_token")
+  status      String    @default("disconnected")
+  waNumber    String?   @map("wa_number")
+  waName      String?   @map("wa_name")
+  connectedAt DateTime? @map("connected_at")
+  createdAt   DateTime  @default(now()) @map("created_at")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
+
+  user User? @relation(fields: [userId], references: [id])
+
+  @@map("baileys_instances")
+}
