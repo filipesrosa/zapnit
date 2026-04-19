@@ -329,12 +329,6 @@ function InstanceCard({
             )}
           </div>
 
-          <div className="bg-brand-500/5 rounded-xl px-4 py-3 text-xs text-slate-500 dark:text-slate-400 flex gap-2 border border-brand-500/10">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#22c55e" strokeWidth="2" className="flex-shrink-0 mt-0.5">
-              <path d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-            </svg>
-            Conexão via Baileys (QR Code). As credenciais ficam armazenadas no servidor.
-          </div>
 
           <div className="flex justify-end">
             {confirming ? (

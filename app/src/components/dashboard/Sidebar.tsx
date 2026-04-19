@@ -40,6 +40,7 @@ const links = [
   {
     href: "/dashboard/templates",
     label: "Templates",
+    hidden: true,
     icon: (
       <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
         <path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z" />
@@ -73,7 +74,7 @@ export default function Sidebar({ open, onClose }: SidebarProps) {
 
   const nav = (
     <nav className="flex flex-col gap-1 px-3 flex-1">
-      {links.map((link) => {
+      {links.filter(link => !link.hidden).map((link) => {
         const active = pathname.startsWith(link.href);
         return (
           <Link
