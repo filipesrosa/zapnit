@@ -1,7 +1,8 @@
 "use client";
 
 import Link from "next/link";
-import { usePathname } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
+import { getUser, logout } from "@/lib/auth";
 
 const links = [
   {
@@ -145,16 +146,34 @@ function Logo() {
 }
 
 function SidebarFooter() {
+  const router = useRouter();
+  const user = getUser();
+  const initials = user?.name?.trim().split(" ").map(w => w[0]).slice(0, 2).join("").toUpperCase() ?? "?";
+
+  function handleLogout() {
+    logout();
+    router.replace("/login");
+  }
+
   return (
     <div className="px-4 py-4 border-t border-slate-200 dark:border-dark-700/50">
       <div className="flex items-center gap-3">
         <div className="w-8 h-8 rounded-full bg-brand-500/20 border border-brand-500/30 flex items-center justify-center text-xs font-bold text-brand-500 dark:text-brand-400 flex-shrink-0">
-          Z
+          {initials}
         </div>
         <div className="flex-1 min-w-0">
-          <p className="text-slate-900 dark:text-white text-sm font-medium truncate">Zion Clínica</p>
-          <p className="text-slate-500 dark:text-slate-500 text-xs truncate">Plano Pro</p>
+          <p className="text-slate-900 dark:text-white text-sm font-medium truncate">{user?.name ?? "Utilizador"}</p>
+          <p className="text-slate-500 dark:text-slate-500 text-xs truncate">{user?.email ?? ""}</p>
         </div>
+        <button
+          onClick={handleLogout}
+          title="Terminar sessão"
+          className="text-slate-400 hover:text-red-500 dark:hover:text-red-400 transition-colors flex-shrink-0"
+        >
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+            <path d="M9 21H5a2 2 0 01-2-2V5a2 2 0 012-2h4M16 17l5-5-5-5M21 12H9" />
+          </svg>
+        </button>
       </div>
     </div>
   );
