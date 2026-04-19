@@ -1,5 +1,6 @@
 "use client";
 
+import Image from "next/image";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { getUser, logout } from "@/lib/auth";
@@ -130,16 +131,9 @@ export default function Sidebar({ open, onClose }: SidebarProps) {
 
 function Logo() {
   return (
-    <div className="h-16 flex items-center px-5 border-b border-slate-200 dark:border-dark-700/50 flex-shrink-0">
-      <Link href="/dashboard/company" className="flex items-center gap-2.5 group">
-        <div className="w-7 h-7 rounded-lg bg-brand-500 flex items-center justify-center glow-green-sm group-hover:scale-105 transition-transform">
-          <svg width="15" height="15" viewBox="0 0 24 24" fill="none">
-            <path d="M12 2C6.477 2 2 6.477 2 12c0 1.89.525 3.66 1.438 5.168L2 22l4.832-1.438A9.956 9.956 0 0012 22c5.523 0 10-4.477 10-10S17.523 2 12 2z" fill="white" />
-          </svg>
-        </div>
-        <span className="text-slate-900 dark:text-white font-semibold text-base tracking-tight">
-          Zap<span className="text-brand-500">nit</span>
-        </span>
+    <div className="h-16 flex items-center px-4 border-b border-slate-200 dark:border-dark-700/50 flex-shrink-0">
+      <Link href="/dashboard/company">
+        <Image src="/zapnit_logo.png" alt="Zapnit" width={48} height={48} className="rounded-xl" />
       </Link>
     </div>
   );

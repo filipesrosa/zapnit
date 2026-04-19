@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
+import Image from "next/image";
 import Link from "next/link";
 import ThemeToggle from "@/components/ThemeToggle";
 import { setToken, setUser } from "@/lib/auth";
@@ -50,15 +51,8 @@ export default function LoginPage() {
 
         {/* Logo */}
         <div className="relative z-10 p-10">
-          <Link href="/" className="inline-flex items-center gap-2.5 group">
-            <div className="w-8 h-8 rounded-lg bg-brand-500 flex items-center justify-center glow-green-sm group-hover:scale-105 transition-transform">
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
-                <path d="M12 2C6.477 2 2 6.477 2 12c0 1.89.525 3.66 1.438 5.168L2 22l4.832-1.438A9.956 9.956 0 0012 22c5.523 0 10-4.477 10-10S17.523 2 12 2z" fill="white" />
-              </svg>
-            </div>
-            <span className="text-white font-semibold text-lg tracking-tight">
-              Zap<span className="text-brand-400">nit</span>
-            </span>
+          <Link href="/">
+            <Image src="/zapnit_logo.png" alt="Zapnit" width={140} height={140} priority />
           </Link>
         </div>
 
@@ -122,15 +116,8 @@ export default function LoginPage() {
         {/* Top bar */}
         <div className="flex items-center justify-between p-6">
           {/* Mobile logo */}
-          <Link href="/" className="lg:hidden inline-flex items-center gap-2 group">
-            <div className="w-7 h-7 rounded-lg bg-brand-500 flex items-center justify-center glow-green-sm">
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none">
-                <path d="M12 2C6.477 2 2 6.477 2 12c0 1.89.525 3.66 1.438 5.168L2 22l4.832-1.438A9.956 9.956 0 0012 22c5.523 0 10-4.477 10-10S17.523 2 12 2z" fill="white" />
-              </svg>
-            </div>
-            <span className="text-slate-900 dark:text-white font-semibold tracking-tight">
-              Zap<span className="text-brand-500">nit</span>
-            </span>
+          <Link href="/" className="lg:hidden">
+            <Image src="/zapnit_logo.png" alt="Zapnit" width={80} height={80} priority />
           </Link>
           <div className="hidden lg:block" />
 
