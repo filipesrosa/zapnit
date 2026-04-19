@@ -30,14 +30,18 @@ export default async function baileysRoutes(app: FastifyInstance) {
         return reply.status(401).send({ error: 'X-Client-Token ausente' })
       }
 
-      const instance = await baileysManager.getByUserToken(req.params.id, clientToken)
-      if (!instance) return reply.status(401).send({ error: 'Token inválido ou instância não encontrada' })
+      const result = await baileysManager.getByUserToken(req.params.id, clientToken)
+      if (!result) return reply.status(401).send({ error: 'Token inválido ou instância não encontrada' })
+      const { instance, userId } = result
       if (instance.status !== 'connected') return reply.status(503).send({ error: 'WhatsApp não conectado' })
 
       const jid = req.body.phone.replace(/\D/g, '') + '@s.whatsapp.net'
       try {
-        await instance.sendText(jid, req.body.message)
-        return { ok: true }
+        const messageId = await instance.sendText(jid, req.body.message)
+        const record = await prisma.baileysMessage.create({
+          data: { userId, instanceId: req.params.id, messageId: messageId ?? null, ip: req.ip ?? null }
+        })
+        return { zapnitId: record.id, messageId: messageId ?? null }
       } catch (err: unknown) {
         return reply.status(500).send({ error: (err as Error).message })
       }

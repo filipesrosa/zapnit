@@ -134,9 +134,10 @@ class BaileysInstance extends EventEmitter {
     rmSync(this.authDir, { recursive: true, force: true })
   }
 
-  async sendText(to: string, text: string) {
+  async sendText(to: string, text: string): Promise<string | undefined> {
     if (!this.sock || this.status !== 'connected') throw new Error('Instância não conectada')
-    await this.sock.sendMessage(to, { text })
+    const result = await this.sock.sendMessage(to, { text })
+    return result?.key?.id ?? undefined
   }
 
   info(): InstanceInfo {
@@ -208,10 +209,12 @@ class BaileysManager {
     return instance
   }
 
-  async getByUserToken(id: string, clientToken: string): Promise<BaileysInstance | undefined> {
+  async getByUserToken(id: string, clientToken: string): Promise<{ instance: BaileysInstance; userId: string } | undefined> {
     const user = await prisma.user.findUnique({ where: { clientToken } })
     if (!user) return undefined
-    return this.getForUser(id, user.id)
+    const instance = this.getForUser(id, user.id)
+    if (!instance) return undefined
+    return { instance, userId: user.id }
   }
 
   async remove(id: string): Promise<void> {

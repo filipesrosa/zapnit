@@ -164,6 +164,7 @@ model User {
   updatedAt    DateTime          @updatedAt @map("updated_at")
 
   instances BaileysInstance[]
+  messages  BaileysMessage[]
 
   @@map("users")
 }
@@ -178,7 +179,23 @@ model BaileysInstance {
   createdAt   DateTime  @default(now()) @map("created_at")
   updatedAt   DateTime  @updatedAt @map("updated_at")
 
-  user User? @relation(fields: [userId], references: [id])
+  user     User?            @relation(fields: [userId], references: [id])
+  messages BaileysMessage[]
 
   @@map("baileys_instances")
+}
+
+model BaileysMessage {
+  id         String   @id @default(cuid())
+  userId     String   @map("user_id")
+  instanceId String   @map("instance_id")
+  messageId  String?  @map("message_id")
+  origin     String   @default("api")
+  ip         String?
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  user     User            @relation(fields: [userId], references: [id])
+  instance BaileysInstance @relation(fields: [instanceId], references: [id])
+
+  @@map("baileys_messages")
 }
