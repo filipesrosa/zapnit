@@ -58,7 +58,7 @@ export default function Navbar() {
         <div className="hidden md:flex items-center gap-2">
           <ThemeToggle />
           <a
-            href="#pricing"
+            href="/login"
             className="text-sm text-slate-400 hover:text-white transition-colors px-4 py-2"
           >
             Entrar
