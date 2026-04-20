@@ -2,7 +2,7 @@
 
 import Image from "next/image";
 import Link from "next/link";
-import { usePathname, useRouter } from "next/navigation";
+import { usePathname } from "next/navigation";
 import { getUser, logout } from "@/lib/auth";
 
 const links = [
@@ -141,13 +141,12 @@ function Logo() {
 }
 
 function SidebarFooter() {
-  const router = useRouter();
   const user = getUser();
   const initials = user?.name?.trim().split(" ").map(w => w[0]).slice(0, 2).join("").toUpperCase() ?? "?";
 
   function handleLogout() {
     logout();
-    router.replace("/login");
+    window.location.replace("/login");
   }
 
   return (

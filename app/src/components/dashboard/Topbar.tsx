@@ -1,6 +1,6 @@
 "use client";
 
-import { usePathname, useRouter } from "next/navigation";
+import { usePathname } from "next/navigation";
 import { useState } from "react";
 import ThemeToggle from "@/components/ThemeToggle";
 import { getUser, logout } from "@/lib/auth";
@@ -18,7 +18,6 @@ interface TopbarProps {
 
 export default function Topbar({ onMenuClick }: TopbarProps) {
   const pathname = usePathname();
-  const router = useRouter();
   const title = titles[pathname] ?? "Dashboard";
   const user = getUser();
   const initials = user?.name?.trim().split(" ").map(w => w[0]).slice(0, 2).join("").toUpperCase() ?? "?";
@@ -26,7 +25,7 @@ export default function Topbar({ onMenuClick }: TopbarProps) {
 
   function handleLogout() {
     logout();
-    router.replace("/login");
+    window.location.replace("/login");
   }
 
   return (
