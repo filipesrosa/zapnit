@@ -48,6 +48,20 @@ services:
       redis:
         condition: service_healthy
 
+  worker:
+    build:
+      context: ./api
+      dockerfile: Dockerfile
+    container_name: zapnit-worker
+    restart: unless-stopped
+    env_file: ./api/.env
+    command: sh -c "node dist/worker.js"
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
   app:
     build:
       context: ./app

@@ -6,7 +6,9 @@
   "type": "module",
   "scripts": {
     "start": "node dist/index.js",
+    "worker": "node dist/worker.js",
     "dev": "tsx watch src/index.ts",
+    "worker:dev": "tsx watch src/worker.ts",
     "build": "tsc",
     "db:migrate": "npx prisma migrate dev",
     "db:generate": "npx prisma generate",

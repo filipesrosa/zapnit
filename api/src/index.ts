@@ -13,7 +13,6 @@ import messagesRoutes from './routes/messages.js'
 import tenantsRoutes from './routes/tenants.js'
 import plansRoutes from './routes/plans.js'
 import baileysRoutes from './routes/baileys.js'
-import { startMessageWorker } from './jobs/messageWorker.js'
 import { baileysManager } from './services/baileys.js'
 
 const app = Fastify({
@@ -60,9 +59,6 @@ app.get('/health', async () => ({
   version: '1.0.0',
   timestamp: new Date().toISOString()
 }))
-
-// Start workers
-startMessageWorker()
 
 // Recarrega instâncias Baileys persistidas no banco
 baileysManager.init().catch(err => app.log.error(err, 'baileys init error'))
