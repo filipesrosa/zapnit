@@ -33,6 +33,18 @@ type BaileysInstance = {
   waNumber: string | null;
   waName: string | null;
   connectedAt: string | null;
+  webhookUrl: string | null;
+  webhookEvents: string[];
+};
+
+const WEBHOOK_EVENT_LABELS: Record<string, string> = {
+  "messages.upsert": "Mensagem recebida",
+  "messages.update": "Status da mensagem",
+  "messages.reaction": "Reações",
+  "message-receipt.update": "Confirmação de leitura",
+  "messages.delete": "Mensagem apagada",
+  "presence.update": "Presença (digitando...)",
+  "call": "Chamadas",
 };
 
 
@@ -236,12 +248,57 @@ function QrModal({
 function InstanceCard({
   instance,
   onDisconnect,
+  onWebhookSaved,
 }: {
   instance: BaileysInstance;
   onDisconnect: () => void;
+  onWebhookSaved: (id: string, url: string | null, events: string[]) => void;
 }) {
   const [expanded, setExpanded] = useState(false);
   const [confirming, setConfirming] = useState(false);
+
+  // Webhook state
+  const [webhookUrl, setWebhookUrl] = useState(instance.webhookUrl ?? "");
+  const [webhookEvents, setWebhookEvents] = useState<string[]>(instance.webhookEvents ?? []);
+  const [savingWebhook, setSavingWebhook] = useState(false);
+  const [webhookError, setWebhookError] = useState<string | null>(null);
+
+  const toggleEvent = (ev: string) =>
+    setWebhookEvents((prev) =>
+      prev.includes(ev) ? prev.filter((e) => e !== ev) : [...prev, ev]
+    );
+
+  const saveWebhook = async () => {
+    if (!webhookUrl || webhookEvents.length === 0) return;
+    setSavingWebhook(true);
+    setWebhookError(null);
+    try {
+      await apiFetch(`/instances/${instance.id}/webhook`, {
+        method: "PUT",
+        body: JSON.stringify({ url: webhookUrl, events: webhookEvents }),
+      });
+      onWebhookSaved(instance.id, webhookUrl, webhookEvents);
+    } catch (e: unknown) {
+      setWebhookError(e instanceof Error ? e.message : "Erro ao salvar webhook");
+    } finally {
+      setSavingWebhook(false);
+    }
+  };
+
+  const clearWebhook = async () => {
+    setSavingWebhook(true);
+    setWebhookError(null);
+    try {
+      await apiFetch(`/instances/${instance.id}/webhook`, { method: "DELETE" });
+      setWebhookUrl("");
+      setWebhookEvents([]);
+      onWebhookSaved(instance.id, null, []);
+    } catch (e: unknown) {
+      setWebhookError(e instanceof Error ? e.message : "Erro ao remover webhook");
+    } finally {
+      setSavingWebhook(false);
+    }
+  };
 
   const statusConfig = {
     connected: {
@@ -330,6 +387,54 @@ function InstanceCard({
           </div>
 
 
+          {/* Webhook config */}
+          <div className="space-y-3 border-t border-slate-100 dark:border-dark-700/40 pt-4">
+            <p className="text-xs font-medium text-slate-700 dark:text-slate-300">Webhook de eventos</p>
+            <input
+              type="url"
+              value={webhookUrl}
+              onChange={(e) => setWebhookUrl(e.target.value)}
+              placeholder="https://seu-servidor.com/webhook"
+              className={inputCls}
+            />
+            <div className="grid grid-cols-2 gap-2">
+              {Object.entries(WEBHOOK_EVENT_LABELS).map(([ev, label]) => (
+                <label key={ev} className="flex items-center gap-2 cursor-pointer group">
+                  <input
+                    type="checkbox"
+                    checked={webhookEvents.includes(ev)}
+                    onChange={() => toggleEvent(ev)}
+                    className="w-3.5 h-3.5 accent-brand-500 rounded"
+                  />
+                  <span className="text-xs text-slate-600 dark:text-slate-400 group-hover:text-slate-900 dark:group-hover:text-white transition-colors">
+                    {label}
+                  </span>
+                </label>
+              ))}
+            </div>
+            {webhookError && (
+              <p className="text-xs text-red-500">{webhookError}</p>
+            )}
+            <div className="flex gap-2">
+              <button
+                onClick={saveWebhook}
+                disabled={savingWebhook || !webhookUrl || webhookEvents.length === 0}
+                className="text-xs bg-brand-500 hover:bg-brand-600 disabled:opacity-40 disabled:cursor-not-allowed text-white px-3 py-1.5 rounded-lg transition-colors"
+              >
+                {savingWebhook ? "Salvando..." : "Salvar webhook"}
+              </button>
+              {(instance.webhookUrl || webhookUrl) && (
+                <button
+                  onClick={clearWebhook}
+                  disabled={savingWebhook}
+                  className="text-xs text-slate-500 dark:text-slate-400 hover:text-red-500 border border-slate-200 dark:border-dark-600 hover:border-red-300 dark:hover:border-red-500/30 px-3 py-1.5 rounded-lg transition-colors"
+                >
+                  Remover
+                </button>
+              )}
+            </div>
+          </div>
+
           <div className="flex justify-end">
             {confirming ? (
               <div className="flex items-center gap-2">
@@ -406,6 +511,12 @@ export default function PhonesPage() {
   const disconnectInstance = async (id: string) => {
     await apiFetch(`/instances/${id}`, { method: "DELETE" });
     setInstances((prev) => prev.filter((i) => i.id !== id));
+  };
+
+  const handleWebhookSaved = (id: string, url: string | null, events: string[]) => {
+    setInstances((prev) =>
+      prev.map((i) => (i.id === id ? { ...i, webhookUrl: url, webhookEvents: events } : i))
+    );
   };
 
   // WABA handlers
@@ -651,6 +762,7 @@ export default function PhonesPage() {
                 key={instance.id}
                 instance={instance}
                 onDisconnect={() => disconnectInstance(instance.id)}
+                onWebhookSaved={handleWebhookSaved}
               />
             ))
           )}

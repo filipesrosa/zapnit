@@ -17,6 +17,18 @@ const silentLogger = pino({ level: 'silent' })
 
 export type InstanceStatus = 'disconnected' | 'qr' | 'connected'
 
+export const WEBHOOK_EVENTS = [
+  'messages.upsert',
+  'messages.update',
+  'messages.reaction',
+  'message-receipt.update',
+  'messages.delete',
+  'presence.update',
+  'call',
+] as const
+
+export type WebhookEvent = typeof WEBHOOK_EVENTS[number]
+
 export interface InstanceInfo {
   id: string
   userId: string | null
@@ -25,6 +37,8 @@ export interface InstanceInfo {
   waNumber: string | null
   waName: string | null
   connectedAt: string | null
+  webhookUrl: string | null
+  webhookEvents: string[]
 }
 
 class BaileysInstance extends EventEmitter {
@@ -35,16 +49,39 @@ class BaileysInstance extends EventEmitter {
   waNumber: string | null = null
   waName: string | null = null
   connectedAt: string | null = null
+  webhookUrl: string | null = null
+  webhookEvents: string[] = []
 
   private sock: WASocket | null = null
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null
   private readonly authDir: string
 
-  constructor(id: string, userId: string | null = null) {
+  constructor(id: string, userId: string | null = null, webhookUrl: string | null = null, webhookEvents: string[] = []) {
     super()
     this.id = id
     this.userId = userId
+    this.webhookUrl = webhookUrl
+    this.webhookEvents = webhookEvents
     this.authDir = join(process.cwd(), 'sessions', id)
+  }
+
+  private async _fireWebhook(event: string, data: unknown) {
+    if (!this.webhookUrl || !this.webhookEvents.includes(event)) return
+    try {
+      await fetch(this.webhookUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ instanceId: this.id, event, timestamp: new Date().toISOString(), data }),
+        signal: AbortSignal.timeout(10000),
+      })
+    } catch (err) {
+      console.error(`[baileys] webhook error ${this.id}`, err)
+    }
+  }
+
+  setWebhook(url: string | null, events: string[]) {
+    this.webhookUrl = url
+    this.webhookEvents = events
   }
 
   async connect() {
@@ -118,6 +155,14 @@ class BaileysInstance extends EventEmitter {
     })
 
     sock.ev.on('creds.update', saveCreds)
+
+    sock.ev.on('messages.upsert', (data) => this._fireWebhook('messages.upsert', data))
+    sock.ev.on('messages.update', (data) => this._fireWebhook('messages.update', data))
+    sock.ev.on('messages.reaction', (data) => this._fireWebhook('messages.reaction', data))
+    sock.ev.on('message-receipt.update', (data) => this._fireWebhook('message-receipt.update', data))
+    sock.ev.on('messages.delete', (data) => this._fireWebhook('messages.delete', data))
+    sock.ev.on('presence.update', (data) => this._fireWebhook('presence.update', data))
+    sock.ev.on('call', (data) => this._fireWebhook('call', data))
   }
 
   disconnect() {
@@ -149,6 +194,8 @@ class BaileysInstance extends EventEmitter {
       waNumber: this.waNumber,
       waName: this.waName,
       connectedAt: this.connectedAt,
+      webhookUrl: this.webhookUrl,
+      webhookEvents: this.webhookEvents,
     }
   }
 }
@@ -159,7 +206,7 @@ class BaileysManager {
   async init() {
     const rows = await prisma.baileysInstance.findMany()
     for (const row of rows) {
-      const instance = new BaileysInstance(row.id, row.userId)
+      const instance = new BaileysInstance(row.id, row.userId, row.webhookUrl, row.webhookEvents)
       this.instances.set(row.id, instance)
       this._watch(instance)
       instance.connect().catch(err => console.error(`[baileys] reconnect error ${row.id}`, err))
@@ -172,6 +219,17 @@ class BaileysManager {
     this.instances.set(id, instance)
     this._watch(instance)
     await prisma.baileysInstance.create({ data: { id, userId } })
+    return instance
+  }
+
+  async updateWebhook(id: string, userId: string, webhookUrl: string | null, webhookEvents: string[]): Promise<BaileysInstance | undefined> {
+    const instance = this.getForUser(id, userId)
+    if (!instance) return undefined
+    instance.setWebhook(webhookUrl, webhookEvents)
+    await prisma.baileysInstance.update({
+      where: { id },
+      data: { webhookUrl, webhookEvents },
+    })
     return instance
   }
 

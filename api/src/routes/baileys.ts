@@ -1,12 +1,14 @@
 import type { FastifyInstance } from 'fastify'
 import { nanoid } from 'nanoid'
-import { baileysManager } from '../services/baileys.js'
+import { baileysManager, WEBHOOK_EVENTS } from '../services/baileys.js'
 import { authenticateUser } from '../middleware/auth.js'
 import { prisma } from '../db.js'
 
 interface Params { id: string }
 interface SendBody { phone: string; message: string }
 interface EventsQuery { token?: string }
+interface WebhookBody { url: string; events: string[] }
+
 
 export default async function baileysRoutes(app: FastifyInstance) {
   // POST /instances/:id/send-text — autenticado por X-Client-Token (sem JWT)
@@ -47,6 +49,24 @@ export default async function baileysRoutes(app: FastifyInstance) {
       }
     }
   )
+
+  // GET /instances/:id/qr-code — retorna base64 do QR code atual (X-Client-Token)
+  app.get<{ Params: Params }>('/instances/:id/qr-code', async (req, reply) => {
+    const clientToken = req.headers['x-client-token']
+    if (!clientToken || typeof clientToken !== 'string') {
+      return reply.status(401).send({ error: 'X-Client-Token ausente' })
+    }
+
+    const result = await baileysManager.getByUserToken(req.params.id, clientToken)
+    if (!result) return reply.status(401).send({ error: 'Token inválido ou instância não encontrada' })
+
+    const { instance } = result
+    if (instance.status !== 'qr' || !instance.qrDataUrl) {
+      return reply.status(409).send({ error: 'QR code não disponível', status: instance.status })
+    }
+
+    return { qrBase64: instance.qrDataUrl }
+  })
 
   // GET /instances/:id/events — SSE com JWT via query string (EventSource não suporta headers)
   app.get<{ Params: Params; Querystring: EventsQuery }>('/instances/:id/events', async (req, reply) => {
@@ -141,6 +161,42 @@ export default async function baileysRoutes(app: FastifyInstance) {
       const instance = baileysManager.getForUser(req.params.id, req.authUser.id)
       if (!instance) return reply.status(404).send({ error: 'Instância não encontrada' })
       await baileysManager.remove(req.params.id)
+      return reply.status(204).send()
+    })
+
+    // PUT /instances/:id/webhook — configurar webhook
+    auth.put<{ Params: Params; Body: WebhookBody }>(
+      '/instances/:id/webhook',
+      {
+        schema: {
+          body: {
+            type: 'object',
+            required: ['url', 'events'],
+            properties: {
+              url: { type: 'string', format: 'uri' },
+              events: {
+                type: 'array',
+                items: { type: 'string', enum: WEBHOOK_EVENTS as unknown as string[] },
+                minItems: 1,
+              },
+            },
+          },
+        },
+      },
+      async (req, reply) => {
+        const invalid = req.body.events.filter(e => !(WEBHOOK_EVENTS as readonly string[]).includes(e))
+        if (invalid.length) return reply.status(400).send({ error: `Eventos inválidos: ${invalid.join(', ')}` })
+
+        const instance = await baileysManager.updateWebhook(req.params.id, req.authUser.id, req.body.url, req.body.events)
+        if (!instance) return reply.status(404).send({ error: 'Instância não encontrada' })
+        return instance.info()
+      }
+    )
+
+    // DELETE /instances/:id/webhook — remover webhook
+    auth.delete<{ Params: Params }>('/instances/:id/webhook', async (req, reply) => {
+      const instance = await baileysManager.updateWebhook(req.params.id, req.authUser.id, null, [])
+      if (!instance) return reply.status(404).send({ error: 'Instância não encontrada' })
       return reply.status(204).send()
     })
   })

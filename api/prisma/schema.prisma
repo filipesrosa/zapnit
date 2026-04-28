@@ -170,14 +170,16 @@ model User {
 }
 
 model BaileysInstance {
-  id          String    @id
-  userId      String?   @map("user_id")
-  status      String    @default("disconnected")
-  waNumber    String?   @map("wa_number")
-  waName      String?   @map("wa_name")
-  connectedAt DateTime? @map("connected_at")
-  createdAt   DateTime  @default(now()) @map("created_at")
-  updatedAt   DateTime  @updatedAt @map("updated_at")
+  id             String    @id
+  userId         String?   @map("user_id")
+  status         String    @default("disconnected")
+  waNumber       String?   @map("wa_number")
+  waName         String?   @map("wa_name")
+  connectedAt    DateTime? @map("connected_at")
+  webhookUrl     String?   @map("webhook_url")
+  webhookEvents  String[]  @map("webhook_events")
+  createdAt      DateTime  @default(now()) @map("created_at")
+  updatedAt      DateTime  @updatedAt @map("updated_at")
 
   user     User?            @relation(fields: [userId], references: [id])
   messages BaileysMessage[]
