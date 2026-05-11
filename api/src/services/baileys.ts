@@ -5,6 +5,7 @@ import {
   fetchLatestBaileysVersion,
   type WASocket,
   type ConnectionState,
+  proto,
 } from '@whiskeysockets/baileys'
 import { toDataURL } from 'qrcode'
 import pino from 'pino'
@@ -55,6 +56,8 @@ class BaileysInstance extends EventEmitter {
   private sock: WASocket | null = null
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null
   private readonly authDir: string
+  private messageStore = new Map<string, proto.IMessage>()
+  private readonly MESSAGE_STORE_LIMIT = 500
 
   constructor(id: string, userId: string | null = null, webhookUrl: string | null = null, webhookEvents: string[] = []) {
     super()
@@ -77,6 +80,13 @@ class BaileysInstance extends EventEmitter {
     } catch (err) {
       console.error(`[baileys] webhook error ${this.id}`, err)
     }
+  }
+
+  private _storeMessage(id: string, message: proto.IMessage) {
+    if (this.messageStore.size >= this.MESSAGE_STORE_LIMIT) {
+      this.messageStore.delete(this.messageStore.keys().next().value!)
+    }
+    this.messageStore.set(id, message)
   }
 
   setWebhook(url: string | null, events: string[]) {
@@ -103,6 +113,10 @@ class BaileysInstance extends EventEmitter {
       logger: silentLogger,
       auth: state,
       printQRInTerminal: false,
+      getMessage: async (key) => {
+        if (!key.id) return undefined
+        return this.messageStore.get(key.id)
+      },
     })
 
     this.sock = sock
@@ -156,7 +170,12 @@ class BaileysInstance extends EventEmitter {
 
     sock.ev.on('creds.update', saveCreds)
 
-    sock.ev.on('messages.upsert', (data) => this._fireWebhook('messages.upsert', data))
+    sock.ev.on('messages.upsert', (data) => {
+      for (const msg of data.messages) {
+        if (msg.key.id && msg.message) this._storeMessage(msg.key.id, msg.message)
+      }
+      this._fireWebhook('messages.upsert', data)
+    })
     sock.ev.on('messages.update', (data) => this._fireWebhook('messages.update', data))
     sock.ev.on('messages.reaction', (data) => this._fireWebhook('messages.reaction', data))
     sock.ev.on('message-receipt.update', (data) => this._fireWebhook('message-receipt.update', data))
@@ -182,6 +201,7 @@ class BaileysInstance extends EventEmitter {
   async sendText(to: string, text: string): Promise<string | undefined> {
     if (!this.sock || this.status !== 'connected') throw new Error('Instância não conectada')
     const result = await this.sock.sendMessage(to, { text })
+    if (result?.key?.id && result?.message) this._storeMessage(result.key.id, result.message)
     return result?.key?.id ?? undefined
   }
 
