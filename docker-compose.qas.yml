@@ -1,0 +1,96 @@
+services:
+  db-qas:
+    image: postgres:17-alpine
+    container_name: zapnit-qas-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: zapnit_qas
+      POSTGRES_USER: zapnit
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-zapnit_qas}
+    ports:
+      - "5434:5432"
+    volumes:
+      - postgres_qas_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U zapnit"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - zapnit-qas
+
+  redis-qas:
+    image: redis:7-alpine
+    container_name: zapnit-qas-redis
+    restart: unless-stopped
+    ports:
+      - "6380:6379"
+    volumes:
+      - redis_qas_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - zapnit-qas
+
+  api-qas:
+    build:
+      context: ./api
+      dockerfile: Dockerfile
+    container_name: zapnit-qas-api
+    restart: unless-stopped
+    env_file: ./api/.env.qas
+    ports:
+      - "3110:3100"
+    volumes:
+      - baileys_qas_sessions:/app/sessions
+    depends_on:
+      db-qas:
+        condition: service_healthy
+      redis-qas:
+        condition: service_healthy
+    networks:
+      - zapnit-qas
+
+  worker-qas:
+    build:
+      context: ./api
+      dockerfile: Dockerfile
+    container_name: zapnit-qas-worker
+    restart: unless-stopped
+    env_file: ./api/.env.qas
+    command: sh -c "node dist/worker.js"
+    depends_on:
+      db-qas:
+        condition: service_healthy
+      redis-qas:
+        condition: service_healthy
+    networks:
+      - zapnit-qas
+
+  app-qas:
+    build:
+      context: ./app
+      dockerfile: Dockerfile
+      args:
+        NEXT_PUBLIC_API_URL: https://api.qas.zapnit.frsolutions.pro
+    container_name: zapnit-qas-app
+    restart: unless-stopped
+    env_file: ./app/.env.qas
+    ports:
+      - "3010:3000"
+    depends_on:
+      - api-qas
+    networks:
+      - zapnit-qas
+
+volumes:
+  postgres_qas_data:
+  redis_qas_data:
+  baileys_qas_sessions:
+
+networks:
+  zapnit-qas:
+    driver: bridge
