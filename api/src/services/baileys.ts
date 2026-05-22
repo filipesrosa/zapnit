@@ -3,6 +3,7 @@ import {
   useMultiFileAuthState,
   DisconnectReason,
   fetchLatestBaileysVersion,
+  downloadMediaMessage,
   type WASocket,
   type ConnectionState,
   proto,
@@ -13,6 +14,8 @@ import { EventEmitter } from 'events'
 import { rmSync } from 'fs'
 import { join } from 'path'
 import { prisma } from '../db.js'
+import { askGemini } from './gemini.js'
+import { decodeQRCode } from './qrcode-reader.js'
 
 const silentLogger = pino({ level: 'silent' })
 
@@ -26,6 +29,7 @@ export const WEBHOOK_EVENTS = [
   'messages.delete',
   'presence.update',
   'call',
+  'qrcode.detected',
 ] as const
 
 export type WebhookEvent = typeof WEBHOOK_EVENTS[number]
@@ -40,6 +44,9 @@ export interface InstanceInfo {
   connectedAt: string | null
   webhookUrl: string | null
   webhookEvents: string[]
+  aiEnabled: boolean
+  aiSystemPrompt: string | null
+  qrCodeDetection: boolean
 }
 
 class BaileysInstance extends EventEmitter {
@@ -52,6 +59,9 @@ class BaileysInstance extends EventEmitter {
   connectedAt: string | null = null
   webhookUrl: string | null = null
   webhookEvents: string[] = []
+  aiEnabled: boolean = false
+  aiSystemPrompt: string | null = null
+  qrCodeDetection: boolean = false
 
   private sock: WASocket | null = null
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null
@@ -59,12 +69,23 @@ class BaileysInstance extends EventEmitter {
   private messageStore = new Map<string, proto.IMessage>()
   private readonly MESSAGE_STORE_LIMIT = 500
 
-  constructor(id: string, userId: string | null = null, webhookUrl: string | null = null, webhookEvents: string[] = []) {
+  constructor(
+    id: string,
+    userId: string | null = null,
+    webhookUrl: string | null = null,
+    webhookEvents: string[] = [],
+    aiEnabled: boolean = false,
+    aiSystemPrompt: string | null = null,
+    qrCodeDetection: boolean = false,
+  ) {
     super()
     this.id = id
     this.userId = userId
     this.webhookUrl = webhookUrl
     this.webhookEvents = webhookEvents
+    this.aiEnabled = aiEnabled
+    this.aiSystemPrompt = aiSystemPrompt
+    this.qrCodeDetection = qrCodeDetection
     this.authDir = join(process.cwd(), 'sessions', id)
   }
 
@@ -87,11 +108,96 @@ class BaileysInstance extends EventEmitter {
       this.messageStore.delete(this.messageStore.keys().next().value!)
     }
     this.messageStore.set(id, message)
+    // Persist to DB so getMessage survives restarts
+    prisma.baileysMessageStore.upsert({
+      where: { instanceId_messageId: { instanceId: this.id, messageId: id } },
+      create: { instanceId: this.id, messageId: id, content: message as object },
+      update: { content: message as object },
+    }).catch(() => {})
+  }
+
+  private async _handleAiMessage(msg: proto.IWebMessageInfo): Promise<void> {
+    const from = msg.key.remoteJid
+    if (!from || !msg.message) return
+
+    const { message } = msg
+
+    const text =
+      message.conversation ||
+      message.extendedTextMessage?.text ||
+      undefined
+
+    const hasImage    = !!message.imageMessage
+    const hasAudio    = !!message.audioMessage
+    const hasDocument = !!message.documentMessage
+
+    if (!text && !hasImage && !hasAudio && !hasDocument) return
+
+    try {
+      // Download buffer once for any media type
+      let buffer: Buffer | undefined
+      if (hasImage || hasAudio || hasDocument) {
+        buffer = await downloadMediaMessage(
+          msg,
+          'buffer',
+          {},
+          this.sock ? { logger: silentLogger, reuploadRequest: this.sock.updateMediaMessage } : undefined,
+        ) as Buffer
+      }
+
+      // QR code detection (images only) — fires webhook and returns, skipping AI
+      if (hasImage && this.qrCodeDetection && buffer) {
+        const qrContent = await decodeQRCode(buffer)
+        if (qrContent) {
+          await this._fireWebhook('qrcode.detected', { from, content: qrContent })
+          return
+        }
+      }
+
+      // AI processing
+      if (!this.aiEnabled) return
+
+      let response: string
+
+      if (text && !hasImage && !hasAudio && !hasDocument) {
+        response = await askGemini(this.aiSystemPrompt, text)
+      } else if (buffer) {
+        let mimeType: string
+        let caption: string | undefined
+
+        if (hasImage) {
+          mimeType = message.imageMessage!.mimetype ?? 'image/jpeg'
+          caption  = message.imageMessage!.caption ?? text
+        } else if (hasAudio) {
+          mimeType = message.audioMessage!.mimetype ?? 'audio/ogg'
+          caption  = text
+        } else {
+          // document — only PDF supported
+          mimeType = message.documentMessage!.mimetype ?? 'application/octet-stream'
+          if (!mimeType.includes('pdf')) return
+          caption = message.documentMessage!.caption ?? text
+        }
+
+        response = await askGemini(this.aiSystemPrompt, caption, { data: buffer, mimeType })
+      } else {
+        return
+      }
+
+      await this.sendText(from, response)
+    } catch (err) {
+      console.error(`[baileys] AI error ${this.id}`, err)
+    }
   }
 
   setWebhook(url: string | null, events: string[]) {
     this.webhookUrl = url
     this.webhookEvents = events
+  }
+
+  setAi(enabled: boolean, systemPrompt: string | null, qrCodeDetection: boolean) {
+    this.aiEnabled = enabled
+    this.aiSystemPrompt = systemPrompt
+    this.qrCodeDetection = qrCodeDetection
   }
 
   async connect() {
@@ -108,6 +214,14 @@ class BaileysInstance extends EventEmitter {
     const { state, saveCreds } = await useMultiFileAuthState(this.authDir)
     const { version } = await fetchLatestBaileysVersion()
 
+    // Clean up message store entries older than 7 days on every connect
+    prisma.baileysMessageStore.deleteMany({
+      where: {
+        instanceId: this.id,
+        createdAt: { lt: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000) },
+      },
+    }).catch(() => {})
+
     const sock = makeWASocket({
       version,
       logger: silentLogger,
@@ -115,7 +229,16 @@ class BaileysInstance extends EventEmitter {
       printQRInTerminal: false,
       getMessage: async (key) => {
         if (!key.id) return undefined
-        return this.messageStore.get(key.id)
+        const cached = this.messageStore.get(key.id)
+        if (cached) return cached
+        // Fallback to DB — covers messages from before server restart
+        try {
+          const row = await prisma.baileysMessageStore.findUnique({
+            where: { instanceId_messageId: { instanceId: this.id, messageId: key.id } },
+          })
+          if (row) return row.content as proto.IMessage
+        } catch {}
+        return undefined
       },
     })
 
@@ -175,6 +298,16 @@ class BaileysInstance extends EventEmitter {
         if (msg.key.id && msg.message) this._storeMessage(msg.key.id, msg.message)
       }
       this._fireWebhook('messages.upsert', data)
+
+      if ((this.aiEnabled || this.qrCodeDetection) && data.type === 'notify') {
+        for (const msg of data.messages) {
+          if (!msg.key.fromMe && msg.message) {
+            this._handleAiMessage(msg).catch(err =>
+              console.error(`[baileys] AI handle error ${this.id}`, err)
+            )
+          }
+        }
+      }
     })
     sock.ev.on('messages.update', (data) => this._fireWebhook('messages.update', data))
     sock.ev.on('messages.reaction', (data) => this._fireWebhook('messages.reaction', data))
@@ -216,6 +349,9 @@ class BaileysInstance extends EventEmitter {
       connectedAt: this.connectedAt,
       webhookUrl: this.webhookUrl,
       webhookEvents: this.webhookEvents,
+      aiEnabled: this.aiEnabled,
+      aiSystemPrompt: this.aiSystemPrompt,
+      qrCodeDetection: this.qrCodeDetection,
     }
   }
 }
@@ -226,7 +362,15 @@ class BaileysManager {
   async init() {
     const rows = await prisma.baileysInstance.findMany()
     for (const row of rows) {
-      const instance = new BaileysInstance(row.id, row.userId, row.webhookUrl, row.webhookEvents)
+      const instance = new BaileysInstance(
+        row.id,
+        row.userId,
+        row.webhookUrl,
+        row.webhookEvents,
+        row.aiEnabled,
+        row.aiSystemPrompt,
+        row.qrCodeDetection,
+      )
       this.instances.set(row.id, instance)
       this._watch(instance)
       instance.connect().catch(err => console.error(`[baileys] reconnect error ${row.id}`, err))
@@ -249,6 +393,17 @@ class BaileysManager {
     await prisma.baileysInstance.update({
       where: { id },
       data: { webhookUrl, webhookEvents },
+    })
+    return instance
+  }
+
+  async updateAi(id: string, userId: string, aiEnabled: boolean, aiSystemPrompt: string | null, qrCodeDetection: boolean): Promise<BaileysInstance | undefined> {
+    const instance = this.getForUser(id, userId)
+    if (!instance) return undefined
+    instance.setAi(aiEnabled, aiSystemPrompt, qrCodeDetection)
+    await prisma.baileysInstance.update({
+      where: { id },
+      data: { aiEnabled, aiSystemPrompt, qrCodeDetection },
     })
     return instance
   }

@@ -8,6 +8,7 @@ interface Params { id: string }
 interface SendBody { phone: string; message: string }
 interface EventsQuery { token?: string }
 interface WebhookBody { url: string; events: string[] }
+interface AiConfigBody { aiEnabled: boolean; aiSystemPrompt?: string; qrCodeDetection?: boolean }
 
 
 export default async function baileysRoutes(app: FastifyInstance) {
@@ -199,5 +200,34 @@ export default async function baileysRoutes(app: FastifyInstance) {
       if (!instance) return reply.status(404).send({ error: 'Instância não encontrada' })
       return reply.status(204).send()
     })
+
+    // PUT /instances/:id/ai — configurar IA Gemini
+    auth.put<{ Params: Params; Body: AiConfigBody }>(
+      '/instances/:id/ai',
+      {
+        schema: {
+          body: {
+            type: 'object',
+            required: ['aiEnabled'],
+            properties: {
+              aiEnabled:       { type: 'boolean' },
+              aiSystemPrompt:  { type: 'string' },
+              qrCodeDetection: { type: 'boolean' },
+            },
+          },
+        },
+      },
+      async (req, reply) => {
+        const instance = await baileysManager.updateAi(
+          req.params.id,
+          req.authUser.id,
+          req.body.aiEnabled,
+          req.body.aiSystemPrompt ?? null,
+          req.body.qrCodeDetection ?? false,
+        )
+        if (!instance) return reply.status(404).send({ error: 'Instância não encontrada' })
+        return instance.info()
+      }
+    )
   })
 }

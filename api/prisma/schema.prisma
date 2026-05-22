@@ -178,11 +178,15 @@ model BaileysInstance {
   connectedAt    DateTime? @map("connected_at")
   webhookUrl     String?   @map("webhook_url")
   webhookEvents  String[]  @map("webhook_events")
+  aiEnabled        Boolean   @default(false) @map("ai_enabled")
+  aiSystemPrompt   String?   @db.Text @map("ai_system_prompt")
+  qrCodeDetection  Boolean   @default(false) @map("qr_code_detection")
   createdAt      DateTime  @default(now()) @map("created_at")
   updatedAt      DateTime  @updatedAt @map("updated_at")
 
-  user     User?            @relation(fields: [userId], references: [id])
-  messages BaileysMessage[]
+  user         User?                @relation(fields: [userId], references: [id])
+  messages     BaileysMessage[]
+  messageStore BaileysMessageStore[]
 
   @@map("baileys_instances")
 }
@@ -200,4 +204,16 @@ model BaileysMessage {
   instance BaileysInstance @relation(fields: [instanceId], references: [id])
 
   @@map("baileys_messages")
+}
+
+model BaileysMessageStore {
+  instanceId String   @map("instance_id")
+  messageId  String   @map("message_id")
+  content    Json
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  instance BaileysInstance @relation(fields: [instanceId], references: [id], onDelete: Cascade)
+
+  @@id([instanceId, messageId])
+  @@map("baileys_message_store")
 }
