@@ -17,6 +17,8 @@ import { prisma } from '../db.js'
 import { askGemini } from './gemini.js'
 import { decodeQRCode } from './qrcode-reader.js'
 
+export type MediaType = 'image' | 'audio' | 'video' | 'document'
+
 const silentLogger = pino({ level: 'silent' })
 
 export type InstanceStatus = 'disconnected' | 'qr' | 'connected'
@@ -334,6 +336,42 @@ class BaileysInstance extends EventEmitter {
   async sendText(to: string, text: string): Promise<string | undefined> {
     if (!this.sock || this.status !== 'connected') throw new Error('Instância não conectada')
     const result = await this.sock.sendMessage(to, { text })
+    if (result?.key?.id && result?.message) this._storeMessage(result.key.id, result.message)
+    return result?.key?.id ?? undefined
+  }
+
+  async sendMedia(
+    to: string,
+    mediaType: MediaType,
+    media: Buffer | { url: string },
+    options: { caption?: string; filename?: string; mimetype?: string; ptt?: boolean } = {},
+  ): Promise<string | undefined> {
+    if (!this.sock || this.status !== 'connected') throw new Error('Instância não conectada')
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    let content: any
+
+    switch (mediaType) {
+      case 'image':
+        content = { image: media, caption: options.caption }
+        break
+      case 'audio':
+        content = { audio: media, mimetype: options.mimetype ?? 'audio/mp4', ptt: options.ptt ?? false }
+        break
+      case 'video':
+        content = { video: media, caption: options.caption }
+        break
+      case 'document':
+        content = {
+          document: media,
+          mimetype: options.mimetype ?? 'application/octet-stream',
+          fileName: options.filename ?? 'document',
+          caption: options.caption,
+        }
+        break
+    }
+
+    const result = await this.sock.sendMessage(to, content)
     if (result?.key?.id && result?.message) this._storeMessage(result.key.id, result.message)
     return result?.key?.id ?? undefined
   }

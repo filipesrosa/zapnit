@@ -6,9 +6,26 @@ import { prisma } from '../db.js'
 
 interface Params { id: string }
 interface SendBody { phone: string; message: string }
+interface SendImageBody   { phone: string; mediaUrl?: string; mediaBase64?: string; caption?: string }
+interface SendAudioBody   { phone: string; mediaUrl?: string; mediaBase64?: string; mimetype?: string; ptt?: boolean }
+interface SendDocumentBody { phone: string; mediaUrl?: string; mediaBase64?: string; filename?: string; caption?: string; mimetype?: string }
 interface EventsQuery { token?: string }
 interface WebhookBody { url: string; events: string[] }
 interface AiConfigBody { aiEnabled: boolean; aiSystemPrompt?: string; qrCodeDetection?: boolean }
+
+function resolveMedia(
+  mediaUrl: string | undefined,
+  mediaBase64: string | undefined,
+  mimetype: string | undefined,
+): { media: Buffer | { url: string }; mimetype: string | undefined } | null {
+  if (mediaUrl) return { media: { url: mediaUrl }, mimetype }
+  if (!mediaBase64) return null
+  const dataUrlMatch = mediaBase64.match(/^data:([^;]+);base64,(.+)$/)
+  if (dataUrlMatch) {
+    return { media: Buffer.from(dataUrlMatch[2], 'base64'), mimetype: mimetype ?? dataUrlMatch[1] }
+  }
+  return { media: Buffer.from(mediaBase64, 'base64'), mimetype }
+}
 
 
 export default async function baileysRoutes(app: FastifyInstance) {
@@ -43,6 +60,139 @@ export default async function baileysRoutes(app: FastifyInstance) {
         const messageId = await instance.sendText(jid, req.body.message)
         const record = await prisma.baileysMessage.create({
           data: { userId, instanceId: req.params.id, messageId: messageId ?? null, ip: req.ip ?? null }
+        })
+        return { zapnitId: record.id, messageId: messageId ?? null }
+      } catch (err: unknown) {
+        return reply.status(500).send({ error: (err as Error).message })
+      }
+    }
+  )
+
+  // POST /instances/:id/send-image (X-Client-Token)
+  app.post<{ Params: Params; Body: SendImageBody }>(
+    '/instances/:id/send-image',
+    {
+      schema: {
+        body: {
+          type: 'object',
+          required: ['phone'],
+          properties: {
+            phone:       { type: 'string' },
+            mediaUrl:    { type: 'string' },
+            mediaBase64: { type: 'string' },
+            caption:     { type: 'string' },
+          },
+        },
+      },
+    },
+    async (req, reply) => {
+      const clientToken = req.headers['x-client-token']
+      if (!clientToken || typeof clientToken !== 'string') return reply.status(401).send({ error: 'X-Client-Token ausente' })
+      const result = await baileysManager.getByUserToken(req.params.id, clientToken)
+      if (!result) return reply.status(401).send({ error: 'Token inválido ou instância não encontrada' })
+      const { instance, userId } = result
+      if (instance.status !== 'connected') return reply.status(503).send({ error: 'WhatsApp não conectado' })
+
+      const resolved = resolveMedia(req.body.mediaUrl, req.body.mediaBase64, undefined)
+      if (!resolved) return reply.status(400).send({ error: 'Informe mediaUrl ou mediaBase64' })
+
+      const jid = req.body.phone.replace(/\D/g, '') + '@s.whatsapp.net'
+      try {
+        const messageId = await instance.sendMedia(jid, 'image', resolved.media, { caption: req.body.caption })
+        const record = await prisma.baileysMessage.create({
+          data: { userId, instanceId: req.params.id, messageId: messageId ?? null, ip: req.ip ?? null },
+        })
+        return { zapnitId: record.id, messageId: messageId ?? null }
+      } catch (err: unknown) {
+        return reply.status(500).send({ error: (err as Error).message })
+      }
+    }
+  )
+
+  // POST /instances/:id/send-audio (X-Client-Token)
+  app.post<{ Params: Params; Body: SendAudioBody }>(
+    '/instances/:id/send-audio',
+    {
+      schema: {
+        body: {
+          type: 'object',
+          required: ['phone'],
+          properties: {
+            phone:       { type: 'string' },
+            mediaUrl:    { type: 'string' },
+            mediaBase64: { type: 'string' },
+            mimetype:    { type: 'string' },
+            ptt:         { type: 'boolean' },
+          },
+        },
+      },
+    },
+    async (req, reply) => {
+      const clientToken = req.headers['x-client-token']
+      if (!clientToken || typeof clientToken !== 'string') return reply.status(401).send({ error: 'X-Client-Token ausente' })
+      const result = await baileysManager.getByUserToken(req.params.id, clientToken)
+      if (!result) return reply.status(401).send({ error: 'Token inválido ou instância não encontrada' })
+      const { instance, userId } = result
+      if (instance.status !== 'connected') return reply.status(503).send({ error: 'WhatsApp não conectado' })
+
+      const resolved = resolveMedia(req.body.mediaUrl, req.body.mediaBase64, req.body.mimetype)
+      if (!resolved) return reply.status(400).send({ error: 'Informe mediaUrl ou mediaBase64' })
+
+      const jid = req.body.phone.replace(/\D/g, '') + '@s.whatsapp.net'
+      try {
+        const messageId = await instance.sendMedia(jid, 'audio', resolved.media, {
+          mimetype: resolved.mimetype,
+          ptt: req.body.ptt,
+        })
+        const record = await prisma.baileysMessage.create({
+          data: { userId, instanceId: req.params.id, messageId: messageId ?? null, ip: req.ip ?? null },
+        })
+        return { zapnitId: record.id, messageId: messageId ?? null }
+      } catch (err: unknown) {
+        return reply.status(500).send({ error: (err as Error).message })
+      }
+    }
+  )
+
+  // POST /instances/:id/send-document (X-Client-Token)
+  app.post<{ Params: Params; Body: SendDocumentBody }>(
+    '/instances/:id/send-document',
+    {
+      schema: {
+        body: {
+          type: 'object',
+          required: ['phone'],
+          properties: {
+            phone:       { type: 'string' },
+            mediaUrl:    { type: 'string' },
+            mediaBase64: { type: 'string' },
+            filename:    { type: 'string' },
+            caption:     { type: 'string' },
+            mimetype:    { type: 'string' },
+          },
+        },
+      },
+    },
+    async (req, reply) => {
+      const clientToken = req.headers['x-client-token']
+      if (!clientToken || typeof clientToken !== 'string') return reply.status(401).send({ error: 'X-Client-Token ausente' })
+      const result = await baileysManager.getByUserToken(req.params.id, clientToken)
+      if (!result) return reply.status(401).send({ error: 'Token inválido ou instância não encontrada' })
+      const { instance, userId } = result
+      if (instance.status !== 'connected') return reply.status(503).send({ error: 'WhatsApp não conectado' })
+
+      const resolved = resolveMedia(req.body.mediaUrl, req.body.mediaBase64, req.body.mimetype)
+      if (!resolved) return reply.status(400).send({ error: 'Informe mediaUrl ou mediaBase64' })
+
+      const jid = req.body.phone.replace(/\D/g, '') + '@s.whatsapp.net'
+      try {
+        const messageId = await instance.sendMedia(jid, 'document', resolved.media, {
+          mimetype: resolved.mimetype,
+          filename: req.body.filename,
+          caption: req.body.caption,
+        })
+        const record = await prisma.baileysMessage.create({
+          data: { userId, instanceId: req.params.id, messageId: messageId ?? null, ip: req.ip ?? null },
         })
         return { zapnitId: record.id, messageId: messageId ?? null }
       } catch (err: unknown) {

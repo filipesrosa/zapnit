@@ -20,7 +20,8 @@ const app = Fastify({
     transport: process.env.NODE_ENV !== 'production'
       ? { target: 'pino-pretty', options: { colorize: true } }
       : undefined
-  }
+  },
+  bodyLimit: 20 * 1024 * 1024, // 20 MB para suportar envio de mídia em base64
 })
 
 // Plugins
