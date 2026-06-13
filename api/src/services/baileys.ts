@@ -7,7 +7,10 @@ import {
   type WASocket,
   type ConnectionState,
   type CacheStore,
-  proto,
+  // type-only: `proto` is NOT a real named export of the CJS module (the
+  // cjs-module-lexer can't see it), so a value import would crash at runtime
+  // under ESM. We only use it in type positions here, so import it as a type.
+  type proto,
 } from '@whiskeysockets/baileys'
 import { toDataURL } from 'qrcode'
 import pino from 'pino'

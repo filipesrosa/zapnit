@@ -1,12 +1,16 @@
-import {
+import baileys, {
   initAuthCreds,
   BufferJSON,
-  proto,
   type AuthenticationState,
   type SignalDataTypeMap,
 } from '@whiskeysockets/baileys'
 import type { Prisma } from '@prisma/client'
 import { prisma } from '../db.js'
+
+// `proto` is only on the default export (not a lexer-visible named export of
+// the CJS module), so destructure it from the default to avoid a runtime
+// "Named export 'proto' not found" crash under ESM.
+const { proto } = baileys
 
 /**
  * Postgres-backed Signal auth state for Baileys.
