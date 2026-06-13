@@ -50,8 +50,18 @@ export async function checkQuota(req: FastifyRequest, reply: FastifyReply): Prom
     tenant.usedMessages = 0
   }
 
+  const isPaidPlan = tenant.plan.slug !== 'free'
+  const paymentBlocked = isPaidPlan && (tenant.paymentStatus === 'past_due' || tenant.paymentStatus === 'canceled')
+  if (paymentBlocked) {
+    return void reply.status(402).send({
+      error: 'payment_required',
+      message: 'Assinatura vencida ou cancelada. Acesse o painel de billing para regularizar.',
+      payment_status: tenant.paymentStatus
+    })
+  }
+
   if (tenant.usedMessages >= tenant.monthlyQuota) {
-    reply.status(429).send({
+    return void reply.status(429).send({
       error: 'quota_exceeded',
       message: `Monthly quota of ${tenant.monthlyQuota} messages exceeded`,
       used: tenant.usedMessages,

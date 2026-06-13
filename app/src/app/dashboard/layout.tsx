@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import Sidebar from "@/components/dashboard/Sidebar";
 import Topbar from "@/components/dashboard/Topbar";
+import OnboardingWizard from "@/components/OnboardingWizard";
 import { getToken } from "@/lib/auth";
 
 export default function DashboardLayout({ children }: { children: React.ReactNode }) {
@@ -29,6 +30,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
         <main className="flex-1 overflow-y-auto p-4 md:p-6 lg:p-8">
           {children}
         </main>
+        <OnboardingWizard />
       </div>
     </div>
   );

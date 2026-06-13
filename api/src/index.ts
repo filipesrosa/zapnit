@@ -13,6 +13,7 @@ import messagesRoutes from './routes/messages.js'
 import tenantsRoutes from './routes/tenants.js'
 import plansRoutes from './routes/plans.js'
 import baileysRoutes from './routes/baileys.js'
+import billingRoutes from './routes/billing.js'
 import { baileysManager } from './services/baileys.js'
 
 const app = Fastify({
@@ -23,6 +24,31 @@ const app = Fastify({
   },
   bodyLimit: 20 * 1024 * 1024, // 20 MB para suportar envio de mídia em base64
 })
+
+// OpenAPI docs — registrado somente se os pacotes estiverem instalados
+try {
+  const swagger = await import('@fastify/swagger')
+  const swaggerUi = await import('@fastify/swagger-ui')
+  await app.register(swagger.default, {
+    openapi: {
+      info: { title: 'Zapnit API', version: '1.0.0', description: 'WhatsApp messaging gateway com automação por IA' },
+      servers: [{ url: process.env.API_BASE_URL ?? 'http://localhost:3001', description: 'API Server' }],
+      components: {
+        securitySchemes: {
+          bearerAuth: { type: 'http', scheme: 'bearer', bearerFormat: 'JWT' }
+        }
+      }
+    }
+  })
+  await app.register(swaggerUi.default, {
+    routePrefix: '/docs',
+    uiConfig: { docExpansion: 'list', deepLinking: false },
+    staticCSP: true
+  })
+  app.log.info('OpenAPI docs available at /docs')
+} catch {
+  app.log.info('Swagger packages not installed — skipping /docs')
+}
 
 // Plugins
 await app.register(fastifyCors, {
@@ -51,7 +77,8 @@ await app.register(webhookRoutes, { prefix: '/webhook' })
 await app.register(messagesRoutes, { prefix: '/api/v1/messages' })
 await app.register(tenantsRoutes, { prefix: '/api/v1/tenants' })
 await app.register(plansRoutes,   { prefix: '/api/v1/plans' })
-await app.register(baileysRoutes, { prefix: '' })
+await app.register(baileysRoutes,  { prefix: '' })
+await app.register(billingRoutes,  { prefix: '/billing' })
 
 // Health check
 app.get('/health', async () => ({

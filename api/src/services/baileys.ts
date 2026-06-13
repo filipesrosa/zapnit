@@ -1,25 +1,63 @@
 import {
   makeWASocket,
-  useMultiFileAuthState,
+  makeCacheableSignalKeyStore,
   DisconnectReason,
   fetchLatestBaileysVersion,
   downloadMediaMessage,
   type WASocket,
   type ConnectionState,
+  type CacheStore,
   proto,
 } from '@whiskeysockets/baileys'
 import { toDataURL } from 'qrcode'
 import pino from 'pino'
 import { EventEmitter } from 'events'
-import { rmSync } from 'fs'
-import { join } from 'path'
 import { prisma } from '../db.js'
+import { useDbAuthState } from './baileys-auth.js'
 import { askGemini } from './gemini.js'
 import { decodeQRCode } from './qrcode-reader.js'
 
 export type MediaType = 'image' | 'audio' | 'video' | 'document'
 
 const silentLogger = pino({ level: 'silent' })
+
+/**
+ * Minimal TTL cache implementing Baileys' CacheStore.
+ * Used for msgRetryCounterCache / placeholderResendCache so that retry-receipt
+ * state survives socket reconnections (the internal default cache is recreated
+ * on every new socket, losing retry counts mid-flight).
+ */
+class TTLCache implements CacheStore {
+  private store = new Map<string, { value: unknown; expires: number }>()
+  constructor(private readonly ttlMs: number, private readonly maxSize = 5000) {}
+
+  get<T>(key: string): T | undefined {
+    const entry = this.store.get(key)
+    if (!entry) return undefined
+    if (entry.expires < Date.now()) {
+      this.store.delete(key)
+      return undefined
+    }
+    return entry.value as T
+  }
+
+  set<T>(key: string, value: T): void {
+    // Lazy TTL only expires on read, so cap the size to bound memory: evict the
+    // oldest entry (Map preserves insertion order) when full.
+    if (this.store.size >= this.maxSize && !this.store.has(key)) {
+      this.store.delete(this.store.keys().next().value!)
+    }
+    this.store.set(key, { value, expires: Date.now() + this.ttlMs })
+  }
+
+  del(key: string): void {
+    this.store.delete(key)
+  }
+
+  flushAll(): void {
+    this.store.clear()
+  }
+}
 
 export type InstanceStatus = 'disconnected' | 'qr' | 'connected'
 
@@ -67,9 +105,14 @@ class BaileysInstance extends EventEmitter {
 
   private sock: WASocket | null = null
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null
-  private readonly authDir: string
+  private reconnectAttempts = 0
+  private connecting = false
   private messageStore = new Map<string, proto.IMessage>()
   private readonly MESSAGE_STORE_LIMIT = 500
+  // Persisted across reconnects so retry-receipt state isn't lost when the
+  // socket is recreated (the Baileys-internal default caches would be wiped).
+  private readonly msgRetryCounterCache: CacheStore = new TTLCache(60 * 60 * 1000)
+  private readonly placeholderResendCache: CacheStore = new TTLCache(60 * 60 * 1000)
 
   constructor(
     id: string,
@@ -88,7 +131,37 @@ class BaileysInstance extends EventEmitter {
     this.aiEnabled = aiEnabled
     this.aiSystemPrompt = aiSystemPrompt
     this.qrCodeDetection = qrCodeDetection
-    this.authDir = join(process.cwd(), 'sessions', id)
+  }
+
+  /** Wipe persisted Signal auth state for this instance (logout / disconnect). */
+  private _clearAuthState() {
+    prisma.baileysAuthState.deleteMany({ where: { instanceId: this.id } }).catch(() => {})
+  }
+
+  /**
+   * Schedule a reconnect. If connect() rejects (e.g. DB/network error before
+   * the connection.update handler is wired), we'd otherwise have no socket and
+   * no scheduled retry — the instance would be stranded. The catch keeps the
+   * backoff loop alive.
+   */
+  /** Initial connect that retries (with backoff) if the first attempt throws. */
+  connectWithRetry() {
+    this.connect().catch((err) => {
+      console.error(`[baileys] initial connect error ${this.id}`, err)
+      this._scheduleReconnect(3000 + Math.floor(Math.random() * 1000))
+    })
+  }
+
+  private _scheduleReconnect(delayMs: number) {
+    if (this.reconnectTimer) clearTimeout(this.reconnectTimer)
+    this.reconnectTimer = setTimeout(() => {
+      this.connect().catch((err) => {
+        console.error(`[baileys] connect error ${this.id}`, err)
+        this.reconnectAttempts += 1
+        const base = Math.min(3000 * 2 ** (this.reconnectAttempts - 1), 60000)
+        this._scheduleReconnect(base + Math.floor(Math.random() * 1000))
+      })
+    }, delayMs)
   }
 
   private async _fireWebhook(event: string, data: unknown) {
@@ -203,6 +276,11 @@ class BaileysInstance extends EventEmitter {
   }
 
   async connect() {
+    // Single-flight: prevent overlapping sockets from racing on the same
+    // instance's Signal auth state, which corrupts the session ratchet.
+    if (this.connecting) return
+    this.connecting = true
+
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer)
       this.reconnectTimer = null
@@ -213,8 +291,13 @@ class BaileysInstance extends EventEmitter {
       this.sock = null
     }
 
-    const { state, saveCreds } = await useMultiFileAuthState(this.authDir)
-    const { version } = await fetchLatestBaileysVersion()
+    let state, saveCreds, version
+    try {
+      ;({ state, saveCreds } = await useDbAuthState(this.id))
+      ;({ version } = await fetchLatestBaileysVersion())
+    } finally {
+      this.connecting = false
+    }
 
     // Clean up message store entries older than 7 days on every connect
     prisma.baileysMessageStore.deleteMany({
@@ -227,8 +310,20 @@ class BaileysInstance extends EventEmitter {
     const sock = makeWASocket({
       version,
       logger: silentLogger,
-      auth: state,
+      auth: {
+        creds: state.creds,
+        // Cache reads in memory so we never read a session file mid-write,
+        // which is the dominant cause of Signal session corruption (=> the
+        // recipient's permanent "Waiting for this message").
+        keys: makeCacheableSignalKeyStore(state.keys, silentLogger),
+      },
       printQRInTerminal: false,
+      // Headless gateway: stay "offline" so WhatsApp keeps routing message
+      // notifications and retry receipts to this socket (and pushes to the
+      // owner's phone), instead of treating us as the foreground device.
+      markOnlineOnConnect: false,
+      msgRetryCounterCache: this.msgRetryCounterCache,
+      placeholderResendCache: this.placeholderResendCache,
       getMessage: async (key) => {
         if (!key.id) return undefined
         const cached = this.messageStore.get(key.id)
@@ -271,14 +366,22 @@ class BaileysInstance extends EventEmitter {
         const loggedOut = statusCode === DisconnectReason.loggedOut
 
         if (loggedOut) {
-          rmSync(this.authDir, { recursive: true, force: true })
+          this._clearAuthState()
           this.emit('logged_out')
+          this.reconnectAttempts = 0
+          this._scheduleReconnect(1000)
+        } else {
+          // Exponential backoff with jitter to avoid reconnect storms that
+          // make an old (tearing-down) and new socket race on the same
+          // instance's Signal auth state.
+          this.reconnectAttempts += 1
+          const base = Math.min(3000 * 2 ** (this.reconnectAttempts - 1), 60000)
+          this._scheduleReconnect(base + Math.floor(Math.random() * 1000))
         }
-
-        this.reconnectTimer = setTimeout(() => this.connect(), loggedOut ? 1000 : 3000)
       }
 
       if (connection === 'open') {
+        this.reconnectAttempts = 0
         this.status = 'connected'
         this.qrDataUrl = null
         this.connectedAt = new Date().toISOString()
@@ -297,7 +400,9 @@ class BaileysInstance extends EventEmitter {
 
     sock.ev.on('messages.upsert', (data) => {
       for (const msg of data.messages) {
-        if (msg.key.id && msg.message) this._storeMessage(msg.key.id, msg.message)
+        // Only our own outbound messages can be the target of a retry receipt,
+        // so only those need to be retrievable by getMessage.
+        if (msg.key.fromMe && msg.key.id && msg.message) this._storeMessage(msg.key.id, msg.message)
       }
       this._fireWebhook('messages.upsert', data)
 
@@ -330,7 +435,7 @@ class BaileysInstance extends EventEmitter {
     }
     this.status = 'disconnected'
     this.qrDataUrl = null
-    rmSync(this.authDir, { recursive: true, force: true })
+    this._clearAuthState()
   }
 
   async sendText(to: string, text: string): Promise<string | undefined> {
@@ -411,7 +516,7 @@ class BaileysManager {
       )
       this.instances.set(row.id, instance)
       this._watch(instance)
-      instance.connect().catch(err => console.error(`[baileys] reconnect error ${row.id}`, err))
+      instance.connectWithRetry()
     }
   }
 

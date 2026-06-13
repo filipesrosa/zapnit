@@ -8,15 +8,16 @@ datasource db {
 }
 
 model Plan {
-  id           String   @id @default(cuid())
-  name         String
-  slug         String   @unique
-  monthlyQuota Int      @map("monthly_quota")
-  price        Decimal  @db.Decimal(10, 2)
-  features     Json?
-  isActive     Boolean  @default(true) @map("is_active")
-  createdAt    DateTime @default(now()) @map("created_at")
-  updatedAt    DateTime @updatedAt @map("updated_at")
+  id             String   @id @default(cuid())
+  name           String
+  slug           String   @unique
+  monthlyQuota   Int      @map("monthly_quota")
+  price          Decimal  @db.Decimal(10, 2)
+  features       Json?
+  isActive       Boolean  @default(true) @map("is_active")
+  gatewayPriceId String?  @map("gateway_price_id")
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
 
   tenants Tenant[]
 
@@ -24,19 +25,25 @@ model Plan {
 }
 
 model Tenant {
-  id           String   @id @default(cuid())
-  name         String
-  clientId     String   @unique @map("client_id")
-  clientSecret String   @map("client_secret")
-  isInternal   Boolean  @default(false) @map("is_internal")
-  planId       String   @map("plan_id")
-  monthlyQuota Int      @map("monthly_quota")
-  usedMessages Int      @default(0) @map("used_messages")
-  quotaResetAt DateTime @map("quota_reset_at")
-  createdAt    DateTime @default(now()) @map("created_at")
-  updatedAt    DateTime @updatedAt @map("updated_at")
+  id                    String    @id @default(cuid())
+  name                  String
+  clientId              String    @unique @map("client_id")
+  clientSecret          String    @map("client_secret")
+  isInternal            Boolean   @default(false) @map("is_internal")
+  planId                String    @map("plan_id")
+  monthlyQuota          Int       @map("monthly_quota")
+  usedMessages          Int       @default(0) @map("used_messages")
+  quotaResetAt          DateTime  @map("quota_reset_at")
+  gatewayCustomerId     String?   @unique @map("gateway_customer_id")
+  gatewaySubscriptionId String?   @unique @map("gateway_subscription_id")
+  gatewayPriceId        String?   @map("gateway_price_id")
+  paymentStatus         String?   @map("payment_status")
+  billingCycleEnd       DateTime? @map("billing_cycle_end")
+  createdAt             DateTime  @default(now()) @map("created_at")
+  updatedAt             DateTime  @updatedAt @map("updated_at")
 
   plan          Plan     @relation(fields: [planId], references: [id])
+  user          User?
   phoneNumbers  PhoneNumber[]
   messages      Message[]
   contacts      Contact[]
@@ -160,9 +167,11 @@ model User {
   email        String            @unique
   passwordHash String            @map("password_hash")
   clientToken  String            @unique @default(uuid()) @map("client_token")
+  tenantId     String?           @unique @map("tenant_id")
   createdAt    DateTime          @default(now()) @map("created_at")
   updatedAt    DateTime          @updatedAt @map("updated_at")
 
+  tenant    Tenant?           @relation(fields: [tenantId], references: [id])
   instances BaileysInstance[]
   messages  BaileysMessage[]
 
@@ -187,6 +196,7 @@ model BaileysInstance {
   user         User?                @relation(fields: [userId], references: [id])
   messages     BaileysMessage[]
   messageStore BaileysMessageStore[]
+  authState    BaileysAuthState[]
 
   @@map("baileys_instances")
 }
@@ -216,4 +226,21 @@ model BaileysMessageStore {
 
   @@id([instanceId, messageId])
   @@map("baileys_message_store")
+}
+
+// Signal auth state (creds + libsignal keys) persisted atomically per row.
+// Replaces useMultiFileAuthState: each key is an isolated upsert, eliminating
+// the file-write races that corrupt Signal sessions (=> "Waiting for this
+// message"). `data` holds JSON.stringify(value, BufferJSON.replacer).
+model BaileysAuthState {
+  instanceId String   @map("instance_id")
+  category   String // 'creds' or signal key type (session, pre-key, sender-key, app-state-sync-key, ...)
+  keyId      String   @map("key_id") // 'creds' for the creds row, otherwise the key id
+  data       String   @db.Text
+  updatedAt  DateTime @updatedAt @map("updated_at")
+
+  instance BaileysInstance @relation(fields: [instanceId], references: [id], onDelete: Cascade)
+
+  @@id([instanceId, category, keyId])
+  @@map("baileys_auth_state")
 }

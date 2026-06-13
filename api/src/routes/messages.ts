@@ -29,14 +29,26 @@ export default async function messagesRoutes(app: FastifyInstance): Promise<void
   app.post<{ Body: SendMessageBody }>('/send', {
     preHandler: [checkQuota],
     schema: {
+      tags: ['Mensagens'],
+      summary: 'Enviar mensagem de texto',
+      security: [{ bearerAuth: [] }],
       body: {
         type: 'object',
         required: ['to', 'message', 'phone_number_id'],
         properties: {
-          to:             { type: 'string' },
+          to:             { type: 'string', description: 'Número do destinatário no formato internacional (ex: 5511999999999)' },
           message:        { type: 'string', maxLength: 4096 },
-          phone_number_id: { type: 'string' },
+          phone_number_id: { type: 'string', description: 'ID do número remetente (Meta phone_number_id)' },
           preview_url:    { type: 'boolean', default: false }
+        }
+      },
+      response: {
+        202: {
+          type: 'object',
+          properties: {
+            message_id: { type: 'string' },
+            status: { type: 'string', enum: ['queued'] }
+          }
         }
       }
     }
@@ -88,6 +100,9 @@ export default async function messagesRoutes(app: FastifyInstance): Promise<void
   app.post<{ Body: SendTemplateBody }>('/send-template', {
     preHandler: [checkQuota],
     schema: {
+      tags: ['Mensagens'],
+      summary: 'Enviar template WhatsApp aprovado',
+      security: [{ bearerAuth: [] }],
       body: {
         type: 'object',
         required: ['to', 'template_name', 'language', 'phone_number_id'],
@@ -147,7 +162,13 @@ export default async function messagesRoutes(app: FastifyInstance): Promise<void
   })
 
   // GET /api/v1/messages/:id
-  app.get<{ Params: MessageParams }>('/:id', async (req, reply) => {
+  app.get<{ Params: MessageParams }>('/:id', {
+    schema: {
+      tags: ['Mensagens'],
+      summary: 'Status de uma mensagem',
+      security: [{ bearerAuth: [] }]
+    }
+  }, async (req, reply) => {
     const { tenant } = req
     const msg = await prisma.message.findFirst({
       where: { id: req.params.id, tenantId: tenant.id }
