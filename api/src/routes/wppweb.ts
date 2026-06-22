@@ -3,6 +3,7 @@ import { randomBytes } from 'crypto'
 import { wppwebManager, WEBHOOK_EVENTS } from '../services/wppweb.js'
 import { authenticateUser } from '../middleware/auth.js'
 import { prisma } from '../db.js'
+import { incrementUserMessages } from '../lib/quota.js'
 
 interface Params { id: string }
 interface SendBody { phone: string; message: string }
@@ -76,6 +77,7 @@ export default async function wppwebRoutes(app: FastifyInstance) {
         const record = await prisma.wppwebMessage.create({
           data: { userId, instanceId: req.params.id, messageId: messageId ?? null, ip: req.ip ?? null },
         })
+        incrementUserMessages(userId)
         return { zapnitId: record.id, messageId: messageId ?? null }
       } catch (err: unknown) {
         return reply.status(500).send({ error: (err as Error).message })
@@ -116,6 +118,7 @@ export default async function wppwebRoutes(app: FastifyInstance) {
         const record = await prisma.wppwebMessage.create({
           data: { userId, instanceId: req.params.id, messageId: messageId ?? null, ip: req.ip ?? null },
         })
+        incrementUserMessages(userId)
         return { zapnitId: record.id, messageId: messageId ?? null }
       } catch (err: unknown) {
         return reply.status(500).send({ error: (err as Error).message })
@@ -157,6 +160,7 @@ export default async function wppwebRoutes(app: FastifyInstance) {
         const record = await prisma.wppwebMessage.create({
           data: { userId, instanceId: req.params.id, messageId: messageId ?? null, ip: req.ip ?? null },
         })
+        incrementUserMessages(userId)
         return { zapnitId: record.id, messageId: messageId ?? null }
       } catch (err: unknown) {
         return reply.status(500).send({ error: (err as Error).message })
@@ -203,6 +207,7 @@ export default async function wppwebRoutes(app: FastifyInstance) {
         const record = await prisma.wppwebMessage.create({
           data: { userId, instanceId: req.params.id, messageId: messageId ?? null, ip: req.ip ?? null },
         })
+        incrementUserMessages(userId)
         return { zapnitId: record.id, messageId: messageId ?? null }
       } catch (err: unknown) {
         return reply.status(500).send({ error: (err as Error).message })
