@@ -143,8 +143,11 @@ export default function Sidebar({ open, onClose }: SidebarProps) {
 function Logo() {
   return (
     <div className="h-16 flex items-center px-4 border-b border-slate-200 dark:border-dark-700/50 flex-shrink-0">
-      <Link href="/dashboard/company">
-        <Image src="/zapnit_logo.png" alt="Zapnit" width={48} height={48} className="rounded-xl" />
+      <Link href="/dashboard/company" className="flex items-center gap-2.5">
+        <Image src="/zapnit_logo.png" alt="Zapnit" width={36} height={36} className="rounded-lg flex-shrink-0" />
+        <span className="text-slate-900 dark:text-white font-semibold text-lg tracking-tight">
+          Zap<span className="text-brand-500 dark:text-brand-400">nit</span>
+        </span>
       </Link>
     </div>
   );

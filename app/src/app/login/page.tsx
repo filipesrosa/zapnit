@@ -51,8 +51,11 @@ export default function LoginPage() {
 
         {/* Logo */}
         <div className="relative z-10 p-10">
-          <Link href="/">
-            <Image src="/zapnit_logo.png" alt="Zapnit" width={140} height={140} priority />
+          <Link href="/" className="flex items-center gap-3">
+            <Image src="/zapnit_logo.png" alt="Zapnit" width={48} height={48} className="rounded-xl" priority />
+            <span className="text-white font-bold text-2xl tracking-tight">
+              Zap<span className="text-brand-400">nit</span>
+            </span>
           </Link>
         </div>
 
@@ -116,8 +119,11 @@ export default function LoginPage() {
         {/* Top bar */}
         <div className="flex items-center justify-between p-6">
           {/* Mobile logo */}
-          <Link href="/" className="lg:hidden">
-            <Image src="/zapnit_logo.png" alt="Zapnit" width={80} height={80} priority />
+          <Link href="/" className="lg:hidden flex items-center gap-2">
+            <Image src="/zapnit_logo.png" alt="Zapnit" width={36} height={36} className="rounded-lg" priority />
+            <span className="text-slate-900 dark:text-white font-bold text-lg tracking-tight">
+              Zap<span className="text-brand-500 dark:text-brand-400">nit</span>
+            </span>
           </Link>
           <div className="hidden lg:block" />
 
