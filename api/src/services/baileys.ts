@@ -441,6 +441,15 @@ class BaileysInstance extends EventEmitter {
     this._clearAuthState()
   }
 
+  async requestPairingCode(phoneNumber: string): Promise<string> {
+    if (!this.sock) throw new Error('Instância não iniciada')
+    if (this.status === 'connected') throw new Error('Instância já conectada')
+    // Normaliza: remove tudo que não for dígito
+    const normalized = phoneNumber.replace(/\D/g, '')
+    const code = await this.sock.requestPairingCode(normalized)
+    return code
+  }
+
   async sendText(to: string, text: string): Promise<string | undefined> {
     if (!this.sock || this.status !== 'connected') throw new Error('Instância não conectada')
     const result = await this.sock.sendMessage(to, { text })

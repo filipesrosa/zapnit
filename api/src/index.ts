@@ -13,8 +13,10 @@ import messagesRoutes from './routes/messages.js'
 import tenantsRoutes from './routes/tenants.js'
 import plansRoutes from './routes/plans.js'
 import baileysRoutes from './routes/baileys.js'
+import wppwebRoutes from './routes/wppweb.js'
 import billingRoutes from './routes/billing.js'
 import { baileysManager } from './services/baileys.js'
+import { wppwebManager } from './services/wppweb.js'
 
 const app = Fastify({
   logger: {
@@ -78,6 +80,7 @@ await app.register(messagesRoutes, { prefix: '/api/v1/messages' })
 await app.register(tenantsRoutes, { prefix: '/api/v1/tenants' })
 await app.register(plansRoutes,   { prefix: '/api/v1/plans' })
 await app.register(baileysRoutes,  { prefix: '' })
+await app.register(wppwebRoutes,    { prefix: '' })
 await app.register(billingRoutes,  { prefix: '/billing' })
 
 // Health check
@@ -90,6 +93,9 @@ app.get('/health', async () => ({
 
 // Recarrega instâncias Baileys persistidas no banco
 baileysManager.init().catch(err => app.log.error(err, 'baileys init error'))
+
+// Recarrega instâncias WPP Web (whatsapp-web.js) persistidas no banco
+wppwebManager.init().catch(err => app.log.error(err, 'wppweb init error'))
 
 // Handler global de erros de validação
 app.setErrorHandler((err: FastifyError, _req, reply) => {

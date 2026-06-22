@@ -9,7 +9,7 @@ Gateway WhatsApp Business com chatbot IA para negócios locais.
 - **Banco de dados**: PostgreSQL via Prisma
 - **Filas**: BullMQ + Redis
 - **IA**: Claude (Anthropic)
-- **Deploy**: Railway
+- **Deploy**: Docker Compose (VPS)
 
 ## Setup local
 
@@ -32,13 +32,20 @@ npm run db:migrate
 npm run dev
 ```
 
-## Deploy na Railway
+## Deploy (Docker Compose no VPS)
 
-1. Crie um projeto novo na Railway
-2. Adicione os serviços: **PostgreSQL** e **Redis**
-3. Conecte este repositório GitHub
-4. Configure as variáveis de ambiente (copie do `.env.example`)
-5. A Railway detecta automaticamente e faz o deploy
+Produção e QAS compartilham o mesmo checkout em `/opt/apps/zapnit/zapnit` (branch `homolog`), diferindo só pelo arquivo compose:
+
+```bash
+# Produção
+docker compose -f docker-compose.yml build api worker app && \
+docker compose -f docker-compose.yml up -d
+
+# QAS
+./deploy-qas.sh
+```
+
+O `prisma migrate deploy` roda automaticamente no start do container (Dockerfile). PostgreSQL e Redis sobem como serviços do próprio compose.
 
 ## Fluxo OAuth2
 
@@ -100,6 +107,6 @@ curl -X POST http://localhost:3000/api/v1/tenants \
 
 Após vincular um número:
 1. Acesse Meta for Developers → seu App → WhatsApp → Configuração
-2. URL do Webhook: `https://zapnit-api.up.railway.app/webhook/{tenantId}`
+2. URL do Webhook: `https://api.zapnit.frsolutions.pro/webhook/{tenantId}`
 3. Token de verificação: use o `webhook_verify_token` retornado
 4. Assine o evento: `messages`

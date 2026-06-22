@@ -6,7 +6,7 @@ import { getToken, getUser } from "../../../lib/auth";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
-type Tab = "waba" | "qr";
+type Tab = "waba" | "qr" | "wppweb";
 
 // WABA (Meta official API)
 type PhoneNumber = {
@@ -108,18 +108,46 @@ function QrModal({
   instanceId,
   onClose,
   onConnected,
+  basePath = "/instances",
+  pairingEnabled = false,
 }: {
   instanceId: string;
   onClose: () => void;
   onConnected: () => void;
+  basePath?: string;
+  pairingEnabled?: boolean;
 }) {
   const [qr, setQr] = useState<string | null>(null);
   const [status, setStatus] = useState<string>("connecting");
 
+  // Pairing-code (vincular por código em vez de QR)
+  const [mode, setMode] = useState<"qr" | "code">("qr");
+  const [phone, setPhone] = useState("");
+  const [pairingCode, setPairingCode] = useState<string | null>(null);
+  const [requestingCode, setRequestingCode] = useState(false);
+  const [pairingError, setPairingError] = useState<string | null>(null);
+
+  const requestPairingCode = async () => {
+    if (!phone) return;
+    setRequestingCode(true);
+    setPairingError(null);
+    try {
+      const { code } = await apiFetch<{ code: string }>(
+        `${basePath}/${instanceId}/pairing-code`,
+        { method: "POST", body: JSON.stringify({ phone }) }
+      );
+      setPairingCode(code);
+    } catch (e: unknown) {
+      setPairingError(e instanceof Error ? e.message : "Erro ao gerar código");
+    } finally {
+      setRequestingCode(false);
+    }
+  };
+
   useEffect(() => {
     const token = getToken();
     const qs = token ? `?token=${encodeURIComponent(token)}` : "";
-    const es = new EventSource(`${API}/instances/${instanceId}/events${qs}`);
+    const es = new EventSource(`${API}${basePath}/${instanceId}/events${qs}`);
 
     es.addEventListener("status", (e) => {
       const { status } = JSON.parse(e.data);
@@ -141,7 +169,7 @@ function QrModal({
     es.onerror = () => setStatus("error");
 
     return () => es.close();
-  }, [instanceId, onConnected]);
+  }, [instanceId, onConnected, basePath]);
 
   const statusLabel: Record<string, string> = {
     connecting: "Iniciando conexão...",
@@ -183,7 +211,67 @@ function QrModal({
           </button>
         </div>
 
-        {/* QR area */}
+        {/* Mode toggle (QR x código) */}
+        {pairingEnabled && status !== "connected" && (
+          <div className="flex gap-1 p-1 bg-slate-100 dark:bg-dark-800/60 rounded-xl border border-slate-200 dark:border-dark-700/50 w-full">
+            {(["qr", "code"] as const).map((m) => (
+              <button
+                key={m}
+                onClick={() => setMode(m)}
+                className={`flex-1 px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${
+                  mode === m
+                    ? "bg-brand-500 text-white shadow-sm"
+                    : "text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white"
+                }`}
+              >
+                {m === "qr" ? "QR Code" : "Por código"}
+              </button>
+            ))}
+          </div>
+        )}
+
+        {/* Pairing-code area */}
+        {pairingEnabled && mode === "code" && status !== "connected" ? (
+          <div className="w-full space-y-3">
+            {pairingCode ? (
+              <div className="flex flex-col items-center gap-3 py-4">
+                <p className="text-slate-500 dark:text-slate-400 text-xs text-center">
+                  No WhatsApp → Aparelhos conectados → Conectar com número de telefone
+                </p>
+                <div className="flex gap-1.5">
+                  {pairingCode.split("").map((ch, i) => (
+                    <span
+                      key={i}
+                      className="w-8 h-10 flex items-center justify-center rounded-lg bg-brand-500/10 border border-brand-500/20 text-brand-600 dark:text-brand-400 font-mono font-semibold text-lg"
+                    >
+                      {ch}
+                    </span>
+                  ))}
+                </div>
+                <CopyButton value={pairingCode} />
+              </div>
+            ) : (
+              <>
+                <input
+                  type="tel"
+                  value={phone}
+                  onChange={(e) => setPhone(e.target.value)}
+                  placeholder="Número com DDI (ex: 5511999990000)"
+                  className={inputCls}
+                />
+                {pairingError && <p className="text-xs text-red-500">{pairingError}</p>}
+                <button
+                  onClick={requestPairingCode}
+                  disabled={requestingCode || !phone}
+                  className="w-full bg-brand-500 hover:bg-brand-600 disabled:opacity-40 disabled:cursor-not-allowed text-white text-sm font-medium py-2.5 rounded-xl transition-colors"
+                >
+                  {requestingCode ? "Gerando código..." : "Gerar código de pareamento"}
+                </button>
+              </>
+            )}
+          </div>
+        ) : (
+        /* QR area */
         <div className="w-56 h-56 rounded-2xl overflow-hidden flex items-center justify-center border border-slate-200 dark:border-dark-600">
           {status === "connected" ? (
             <div className="flex flex-col items-center gap-3">
@@ -226,6 +314,7 @@ function QrModal({
             </div>
           )}
         </div>
+        )}
 
         {/* Status text */}
         <div className="text-center space-y-1">
@@ -249,10 +338,14 @@ function InstanceCard({
   instance,
   onDisconnect,
   onWebhookSaved,
+  basePath = "/instances",
+  subtitle = "Sem nome · Baileys",
 }: {
   instance: BaileysInstance;
   onDisconnect: () => void;
   onWebhookSaved: (id: string, url: string | null, events: string[]) => void;
+  basePath?: string;
+  subtitle?: string;
 }) {
   const [expanded, setExpanded] = useState(false);
   const [confirming, setConfirming] = useState(false);
@@ -273,7 +366,7 @@ function InstanceCard({
     setSavingWebhook(true);
     setWebhookError(null);
     try {
-      await apiFetch(`/instances/${instance.id}/webhook`, {
+      await apiFetch(`${basePath}/${instance.id}/webhook`, {
         method: "PUT",
         body: JSON.stringify({ url: webhookUrl, events: webhookEvents }),
       });
@@ -289,7 +382,7 @@ function InstanceCard({
     setSavingWebhook(true);
     setWebhookError(null);
     try {
-      await apiFetch(`/instances/${instance.id}/webhook`, { method: "DELETE" });
+      await apiFetch(`${basePath}/${instance.id}/webhook`, { method: "DELETE" });
       setWebhookUrl("");
       setWebhookEvents([]);
       onWebhookSaved(instance.id, null, []);
@@ -334,7 +427,7 @@ function InstanceCard({
               {instance.waNumber ? `+${instance.waNumber}` : `Instância ${instance.id.slice(0, 6)}`}
             </p>
             <p className="text-xs text-slate-500 truncate">
-              {instance.waName ?? "Sem nome · Baileys"}
+              {instance.waName ?? subtitle}
             </p>
           </div>
         </div>
@@ -483,10 +576,22 @@ export default function PhonesPage() {
   const [qrInstanceId, setQrInstanceId] = useState<string | null>(null);
   const [creatingInstance, setCreatingInstance] = useState(false);
 
+  // WPP Web (whatsapp-web.js) state
+  const [wppInstances, setWppInstances] = useState<BaileysInstance[]>([]);
+  const [wppQrInstanceId, setWppQrInstanceId] = useState<string | null>(null);
+  const [creatingWpp, setCreatingWpp] = useState(false);
+
   const fetchInstances = useCallback(async () => {
     try {
       const data = await apiFetch<BaileysInstance[]>("/instances");
       setInstances(data);
+    } catch (_) {}
+  }, []);
+
+  const fetchWppInstances = useCallback(async () => {
+    try {
+      const data = await apiFetch<BaileysInstance[]>("/wpp-instances");
+      setWppInstances(data);
     } catch (_) {}
   }, []);
 
@@ -496,6 +601,13 @@ export default function PhonesPage() {
     const interval = setInterval(fetchInstances, 5000);
     return () => clearInterval(interval);
   }, [tab, fetchInstances]);
+
+  useEffect(() => {
+    if (tab !== "wppweb") return;
+    fetchWppInstances();
+    const interval = setInterval(fetchWppInstances, 5000);
+    return () => clearInterval(interval);
+  }, [tab, fetchWppInstances]);
 
   const createInstance = async () => {
     setCreatingInstance(true);
@@ -508,13 +620,35 @@ export default function PhonesPage() {
     }
   };
 
+  const createWppInstance = async () => {
+    setCreatingWpp(true);
+    try {
+      const { id } = await apiFetch<{ id: string }>("/wpp-instances", { method: "POST" });
+      setWppQrInstanceId(id);
+      await fetchWppInstances();
+    } finally {
+      setCreatingWpp(false);
+    }
+  };
+
   const disconnectInstance = async (id: string) => {
     await apiFetch(`/instances/${id}`, { method: "DELETE" });
     setInstances((prev) => prev.filter((i) => i.id !== id));
   };
 
+  const disconnectWppInstance = async (id: string) => {
+    await apiFetch(`/wpp-instances/${id}`, { method: "DELETE" });
+    setWppInstances((prev) => prev.filter((i) => i.id !== id));
+  };
+
   const handleWebhookSaved = (id: string, url: string | null, events: string[]) => {
     setInstances((prev) =>
+      prev.map((i) => (i.id === id ? { ...i, webhookUrl: url, webhookEvents: events } : i))
+    );
+  };
+
+  const handleWppWebhookSaved = (id: string, url: string | null, events: string[]) => {
+    setWppInstances((prev) =>
       prev.map((i) => (i.id === id ? { ...i, webhookUrl: url, webhookEvents: events } : i))
     );
   };
@@ -557,7 +691,9 @@ export default function PhonesPage() {
           <p className="text-sm text-slate-500 dark:text-slate-400 mt-1">
             {tab === "waba"
               ? "Números WhatsApp Business vinculados via Meta API."
-              : "Conexões WhatsApp via QR Code (Baileys)."}
+              : tab === "qr"
+              ? "Conexões WhatsApp via QR Code (Baileys)."
+              : "Conexões WhatsApp via whatsapp-web.js (QR Code ou código)."}
           </p>
         </div>
 
@@ -570,6 +706,23 @@ export default function PhonesPage() {
               <path d="M12 5v14M5 12h14" />
             </svg>
             Vincular número
+          </button>
+        ) : tab === "wppweb" ? (
+          <button
+            onClick={createWppInstance}
+            disabled={creatingWpp}
+            className="flex items-center gap-2 bg-brand-500 hover:bg-brand-600 disabled:opacity-50 disabled:cursor-not-allowed text-white text-sm font-medium px-4 py-2.5 rounded-xl transition-all hover:scale-[1.02] active:scale-[0.98] glow-green-sm flex-shrink-0"
+          >
+            {creatingWpp ? (
+              <svg className="animate-spin" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <path d="M21 12a9 9 0 11-6.219-8.56" />
+              </svg>
+            ) : (
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                <path d="M12 5v14M5 12h14" />
+              </svg>
+            )}
+            Nova conexão WPP Web
           </button>
         ) : (
           <button
@@ -613,6 +766,14 @@ export default function PhonesPage() {
               <rect x="19" y="19" width="2" height="2" fill="currentColor" />
             </svg>
             QR Code
+          </span>
+        </button>
+        <button onClick={() => setTab("wppweb")} className={tabBtn("wppweb", "WPP Web")}>
+          <span className="flex items-center gap-2">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <path d="M21 11.5a8.38 8.38 0 01-.9 3.8 8.5 8.5 0 01-7.6 4.7 8.38 8.38 0 01-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 01-.9-3.8 8.5 8.5 0 014.7-7.6 8.38 8.38 0 013.8-.9h.5a8.48 8.48 0 018 8v.5z" />
+            </svg>
+            WPP Web
           </span>
         </button>
       </div>
@@ -769,6 +930,66 @@ export default function PhonesPage() {
         </div>
       )}
 
+      {/* ── WPP WEB TAB ── */}
+      {tab === "wppweb" && (
+        <div className="space-y-4">
+          {/* Client Token do usuário */}
+          {(() => {
+            const user = getUser();
+            if (!user?.clientToken) return null;
+            return (
+              <div className="glass-card rounded-2xl p-4 border border-brand-500/15">
+                <p className="text-xs font-medium text-slate-500 dark:text-slate-400 mb-2">
+                  Client Token — use no header <code className="font-mono">X-Client-Token</code> para enviar mensagens via API
+                </p>
+                <div className="flex items-center gap-2 bg-slate-50 dark:bg-dark-800/60 rounded-xl px-3.5 py-2.5 border border-slate-100 dark:border-transparent">
+                  <code className="text-xs text-brand-500 dark:text-brand-400 font-mono flex-1 truncate">
+                    {user.clientToken}
+                  </code>
+                  <CopyButton value={user.clientToken} />
+                </div>
+              </div>
+            );
+          })()}
+          {wppInstances.length === 0 ? (
+            <div className="glass-card rounded-2xl p-12 flex flex-col items-center gap-4 text-center">
+              <div className="w-14 h-14 rounded-2xl bg-brand-500/10 border border-brand-500/20 flex items-center justify-center">
+                <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="#22c55e" strokeWidth="1.6">
+                  <path d="M21 11.5a8.38 8.38 0 01-.9 3.8 8.5 8.5 0 01-7.6 4.7 8.38 8.38 0 01-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 01-.9-3.8 8.5 8.5 0 014.7-7.6 8.38 8.38 0 013.8-.9h.5a8.48 8.48 0 018 8v.5z" />
+                </svg>
+              </div>
+              <div>
+                <p className="text-slate-900 dark:text-white font-medium">Nenhuma conexão WPP Web ativa</p>
+                <p className="text-sm text-slate-500 dark:text-slate-400 mt-1">
+                  Conecte um número via QR Code ou código de pareamento usando whatsapp-web.js.
+                </p>
+              </div>
+              <button
+                onClick={createWppInstance}
+                disabled={creatingWpp}
+                className="flex items-center gap-2 bg-brand-500 hover:bg-brand-600 disabled:opacity-50 text-white text-sm font-medium px-5 py-2.5 rounded-xl transition-all hover:scale-[1.02] active:scale-[0.98] glow-green-sm mt-2"
+              >
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                  <path d="M12 5v14M5 12h14" />
+                </svg>
+                Nova conexão WPP Web
+              </button>
+            </div>
+          ) : (
+            wppInstances.map((instance) => (
+              <InstanceCard
+                key={instance.id}
+                instance={instance}
+                basePath="/wpp-instances"
+                subtitle="Sem nome · WPP Web"
+                onDisconnect={() => disconnectWppInstance(instance.id)}
+                onWebhookSaved={handleWppWebhookSaved}
+              />
+            ))
+          )}
+        </div>
+      )}
+
       {/* ── WABA Modal ── */}
       {modalOpen && (
         <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-4 sm:p-6">
@@ -831,7 +1052,7 @@ export default function PhonesPage() {
         </div>
       )}
 
-      {/* ── QR Modal ── */}
+      {/* ── QR Modal (Baileys) ── */}
       {qrInstanceId && (
         <QrModal
           instanceId={qrInstanceId}
@@ -839,6 +1060,20 @@ export default function PhonesPage() {
           onConnected={async () => {
             setQrInstanceId(null);
             await fetchInstances();
+          }}
+        />
+      )}
+
+      {/* ── QR/Pairing Modal (WPP Web) ── */}
+      {wppQrInstanceId && (
+        <QrModal
+          instanceId={wppQrInstanceId}
+          basePath="/wpp-instances"
+          pairingEnabled
+          onClose={() => setWppQrInstanceId(null)}
+          onConnected={async () => {
+            setWppQrInstanceId(null);
+            await fetchWppInstances();
           }}
         />
       )}

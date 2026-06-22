@@ -42,10 +42,13 @@ services:
     container_name: zapnit-qas-api
     restart: unless-stopped
     env_file: ./api/.env.qas
+    environment:
+      WWEBJS_AUTH_PATH: /app/wwebjs_auth
     ports:
       - "3110:3100"
     volumes:
       - baileys_qas_sessions:/app/sessions
+      - wppweb_qas_sessions:/app/wwebjs_auth
     depends_on:
       db-qas:
         condition: service_healthy
@@ -90,6 +93,7 @@ volumes:
   postgres_qas_data:
   redis_qas_data:
   baileys_qas_sessions:
+  wppweb_qas_sessions:
 
 networks:
   zapnit-qas:

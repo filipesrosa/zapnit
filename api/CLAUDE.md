@@ -73,4 +73,4 @@ API_BASE_URL          # Public URL for webhook registration
 
 ### Deployment
 
-Deployed on Railway via NIXPACKS. `railway.json` runs `prisma migrate deploy && node dist/index.js` on start. Health check at `/health`.
+Deployed via Docker Compose on a VPS (see root `docker-compose.yml`). The Dockerfile runs `prisma migrate deploy` on container start. Health check at `/health`.

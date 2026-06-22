@@ -44,9 +44,9 @@ docker compose up -d db redis  # Start only infrastructure
 
 ## Architecture
 
-**Zapnit** is a multi-tenant WhatsApp messaging gateway with two integration paths and a dashboard frontend.
+**Zapnit** is a multi-tenant WhatsApp messaging gateway with three integration paths and a dashboard frontend.
 
-### Two WhatsApp Integration Paths
+### Three WhatsApp Integration Paths
 
 **1. Meta Cloud API (WABA)** — Official Meta Business API, for production/SaaS tenants.
 - Requires a Meta WhatsApp Business Account, phone number ID, and access token per `PhoneNumber` record.
@@ -58,6 +58,13 @@ docker compose up -d db redis  # Start only infrastructure
 - Auth state is persisted to `sessions/<instanceId>/` on disk (volume-mounted in Docker).
 - Each instance can fire webhooks on configurable events (see `WEBHOOK_EVENTS` in `src/services/baileys.ts`).
 - Status updates stream to the frontend via SSE at `GET /instances/:id/events`.
+
+**3. WPP Web (whatsapp-web.js)** — Unofficial WhatsApp Web automation via Puppeteer (`whatsapp-web.js`), parallel to Baileys.
+- `WppwebManager` in `src/services/wppweb.ts` manages one headless Chromium client per instance (QR → connected → disconnected/reconnect). Mirrors the Baileys manager/route/SSE shape.
+- Connect by **QR Code or pairing code** (`POST /wpp-instances/:id/pairing-code`). Instance ids are fixed 32-char strings (uppercase A–Z + digits).
+- Routes live under the `/wpp-instances` prefix (`src/routes/wppweb.ts`); send endpoints use the same `X-Client-Token` auth as Baileys.
+- Session auth state is persisted on disk by LocalAuth under `WWEBJS_AUTH_PATH` (Docker volume `wppweb_sessions:/app/wwebjs_auth`), **not** in Postgres. Requires system Chromium (installed in the Dockerfile runner stage; `PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium-browser`).
+- Frontend: "WPP Web" tab in the dashboard `phones` section, alongside "Meta API" and "QR Code".
 
 ### API Process Split
 
@@ -141,4 +148,4 @@ NEXT_PUBLIC_API_URL     # Must be set at build time
 
 ### Deployment
 
-Deployed on Railway via NIXPACKS. `railway.json` runs `prisma migrate deploy && node dist/index.js` on start. Health check at `GET /health`. Baileys sessions are stored in a persistent volume mounted at `/app/sessions`.
+Deployed via Docker Compose on a VPS. Production and QAS share the same repo checkout at `/opt/apps/zapnit/zapnit` (branch `homolog`); they differ only by compose file: production uses `docker-compose.yml` (`docker compose -f docker-compose.yml build && up -d`), QAS uses `docker-compose.qas.yml` (`./deploy-qas.sh`). The api Dockerfile runs `prisma migrate deploy` on container start. Health check at `GET /health`. Baileys sessions/auth state are persisted in Postgres (`baileys_auth_state`); the legacy `/app/sessions` volume is no longer authoritative.

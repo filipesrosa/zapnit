@@ -1,37 +1,53 @@
 import type { FastifyInstance } from 'fastify'
-import { nanoid } from 'nanoid'
-import { baileysManager, WEBHOOK_EVENTS } from '../services/baileys.js'
+import { randomBytes } from 'crypto'
+import { wppwebManager, WEBHOOK_EVENTS } from '../services/wppweb.js'
 import { authenticateUser } from '../middleware/auth.js'
 import { prisma } from '../db.js'
 
 interface Params { id: string }
 interface SendBody { phone: string; message: string }
-interface SendImageBody   { phone: string; mediaUrl?: string; mediaBase64?: string; caption?: string }
-interface SendAudioBody   { phone: string; mediaUrl?: string; mediaBase64?: string; mimetype?: string; ptt?: boolean }
+interface SendImageBody    { phone: string; mediaUrl?: string; mediaBase64?: string; caption?: string }
+interface SendAudioBody    { phone: string; mediaUrl?: string; mediaBase64?: string; mimetype?: string; ptt?: boolean }
 interface SendDocumentBody { phone: string; mediaUrl?: string; mediaBase64?: string; filename?: string; caption?: string; mimetype?: string }
 interface EventsQuery { token?: string }
 interface WebhookBody { url: string; events: string[] }
 interface AiConfigBody { aiEnabled: boolean; aiSystemPrompt?: string; qrCodeDetection?: boolean }
 
-function resolveMedia(
+// Instância WPP Web: id fixo de 32 caracteres (A-Z maiúsculas + dígitos).
+const ID_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'
+function generateWppId(): string {
+  const bytes = randomBytes(32)
+  let id = ''
+  for (let i = 0; i < 32; i++) id += ID_ALPHABET[bytes[i] % ID_ALPHABET.length]
+  return id
+}
+
+// Resolve mídia (url ou base64) para o formato { mimetype, data } esperado por
+// whatsapp-web.js (MessageMedia espera base64). URLs remotas são baixadas aqui.
+async function resolveMedia(
   mediaUrl: string | undefined,
   mediaBase64: string | undefined,
   mimetype: string | undefined,
-): { media: Buffer | { url: string }; mimetype: string | undefined } | null {
-  if (mediaUrl) return { media: { url: mediaUrl }, mimetype }
+): Promise<{ mimetype: string; data: string } | null> {
+  if (mediaUrl) {
+    const res = await fetch(mediaUrl)
+    if (!res.ok) return null
+    const buf = Buffer.from(await res.arrayBuffer())
+    const mime = mimetype ?? res.headers.get('content-type') ?? 'application/octet-stream'
+    return { mimetype: mime, data: buf.toString('base64') }
+  }
   if (!mediaBase64) return null
   const dataUrlMatch = mediaBase64.match(/^data:([^;]+);base64,(.+)$/)
   if (dataUrlMatch) {
-    return { media: Buffer.from(dataUrlMatch[2], 'base64'), mimetype: mimetype ?? dataUrlMatch[1] }
+    return { mimetype: mimetype ?? dataUrlMatch[1], data: dataUrlMatch[2] }
   }
-  return { media: Buffer.from(mediaBase64, 'base64'), mimetype }
+  return { mimetype: mimetype ?? 'application/octet-stream', data: mediaBase64 }
 }
 
-
-export default async function baileysRoutes(app: FastifyInstance) {
-  // POST /instances/:id/send-text — autenticado por X-Client-Token (sem JWT)
+export default async function wppwebRoutes(app: FastifyInstance) {
+  // POST /wpp-instances/:id/send-text — autenticado por X-Client-Token (sem JWT)
   app.post<{ Params: Params; Body: SendBody }>(
-    '/instances/:id/send-text',
+    '/wpp-instances/:id/send-text',
     {
       schema: {
         body: {
@@ -50,16 +66,15 @@ export default async function baileysRoutes(app: FastifyInstance) {
         return reply.status(401).send({ error: 'X-Client-Token ausente' })
       }
 
-      const result = await baileysManager.getByUserToken(req.params.id, clientToken)
+      const result = await wppwebManager.getByUserToken(req.params.id, clientToken)
       if (!result) return reply.status(401).send({ error: 'Token inválido ou instância não encontrada' })
       const { instance, userId } = result
       if (instance.status !== 'connected') return reply.status(503).send({ error: 'WhatsApp não conectado' })
 
-      const jid = req.body.phone.replace(/\D/g, '') + '@s.whatsapp.net'
       try {
-        const messageId = await instance.sendText(jid, req.body.message)
-        const record = await prisma.baileysMessage.create({
-          data: { userId, instanceId: req.params.id, messageId: messageId ?? null, ip: req.ip ?? null }
+        const messageId = await instance.sendText(req.body.phone, req.body.message)
+        const record = await prisma.wppwebMessage.create({
+          data: { userId, instanceId: req.params.id, messageId: messageId ?? null, ip: req.ip ?? null },
         })
         return { zapnitId: record.id, messageId: messageId ?? null }
       } catch (err: unknown) {
@@ -68,9 +83,9 @@ export default async function baileysRoutes(app: FastifyInstance) {
     }
   )
 
-  // POST /instances/:id/send-image (X-Client-Token)
+  // POST /wpp-instances/:id/send-image (X-Client-Token)
   app.post<{ Params: Params; Body: SendImageBody }>(
-    '/instances/:id/send-image',
+    '/wpp-instances/:id/send-image',
     {
       schema: {
         body: {
@@ -88,18 +103,17 @@ export default async function baileysRoutes(app: FastifyInstance) {
     async (req, reply) => {
       const clientToken = req.headers['x-client-token']
       if (!clientToken || typeof clientToken !== 'string') return reply.status(401).send({ error: 'X-Client-Token ausente' })
-      const result = await baileysManager.getByUserToken(req.params.id, clientToken)
+      const result = await wppwebManager.getByUserToken(req.params.id, clientToken)
       if (!result) return reply.status(401).send({ error: 'Token inválido ou instância não encontrada' })
       const { instance, userId } = result
       if (instance.status !== 'connected') return reply.status(503).send({ error: 'WhatsApp não conectado' })
 
-      const resolved = resolveMedia(req.body.mediaUrl, req.body.mediaBase64, undefined)
+      const resolved = await resolveMedia(req.body.mediaUrl, req.body.mediaBase64, 'image/jpeg')
       if (!resolved) return reply.status(400).send({ error: 'Informe mediaUrl ou mediaBase64' })
 
-      const jid = req.body.phone.replace(/\D/g, '') + '@s.whatsapp.net'
       try {
-        const messageId = await instance.sendMedia(jid, 'image', resolved.media, { caption: req.body.caption })
-        const record = await prisma.baileysMessage.create({
+        const messageId = await instance.sendMedia(req.body.phone, 'image', resolved, { caption: req.body.caption })
+        const record = await prisma.wppwebMessage.create({
           data: { userId, instanceId: req.params.id, messageId: messageId ?? null, ip: req.ip ?? null },
         })
         return { zapnitId: record.id, messageId: messageId ?? null }
@@ -109,9 +123,9 @@ export default async function baileysRoutes(app: FastifyInstance) {
     }
   )
 
-  // POST /instances/:id/send-audio (X-Client-Token)
+  // POST /wpp-instances/:id/send-audio (X-Client-Token)
   app.post<{ Params: Params; Body: SendAudioBody }>(
-    '/instances/:id/send-audio',
+    '/wpp-instances/:id/send-audio',
     {
       schema: {
         body: {
@@ -130,21 +144,17 @@ export default async function baileysRoutes(app: FastifyInstance) {
     async (req, reply) => {
       const clientToken = req.headers['x-client-token']
       if (!clientToken || typeof clientToken !== 'string') return reply.status(401).send({ error: 'X-Client-Token ausente' })
-      const result = await baileysManager.getByUserToken(req.params.id, clientToken)
+      const result = await wppwebManager.getByUserToken(req.params.id, clientToken)
       if (!result) return reply.status(401).send({ error: 'Token inválido ou instância não encontrada' })
       const { instance, userId } = result
       if (instance.status !== 'connected') return reply.status(503).send({ error: 'WhatsApp não conectado' })
 
-      const resolved = resolveMedia(req.body.mediaUrl, req.body.mediaBase64, req.body.mimetype)
+      const resolved = await resolveMedia(req.body.mediaUrl, req.body.mediaBase64, req.body.mimetype ?? 'audio/mp4')
       if (!resolved) return reply.status(400).send({ error: 'Informe mediaUrl ou mediaBase64' })
 
-      const jid = req.body.phone.replace(/\D/g, '') + '@s.whatsapp.net'
       try {
-        const messageId = await instance.sendMedia(jid, 'audio', resolved.media, {
-          mimetype: resolved.mimetype,
-          ptt: req.body.ptt,
-        })
-        const record = await prisma.baileysMessage.create({
+        const messageId = await instance.sendMedia(req.body.phone, 'audio', resolved, { ptt: req.body.ptt })
+        const record = await prisma.wppwebMessage.create({
           data: { userId, instanceId: req.params.id, messageId: messageId ?? null, ip: req.ip ?? null },
         })
         return { zapnitId: record.id, messageId: messageId ?? null }
@@ -154,9 +164,9 @@ export default async function baileysRoutes(app: FastifyInstance) {
     }
   )
 
-  // POST /instances/:id/send-document (X-Client-Token)
+  // POST /wpp-instances/:id/send-document (X-Client-Token)
   app.post<{ Params: Params; Body: SendDocumentBody }>(
-    '/instances/:id/send-document',
+    '/wpp-instances/:id/send-document',
     {
       schema: {
         body: {
@@ -176,22 +186,21 @@ export default async function baileysRoutes(app: FastifyInstance) {
     async (req, reply) => {
       const clientToken = req.headers['x-client-token']
       if (!clientToken || typeof clientToken !== 'string') return reply.status(401).send({ error: 'X-Client-Token ausente' })
-      const result = await baileysManager.getByUserToken(req.params.id, clientToken)
+      const result = await wppwebManager.getByUserToken(req.params.id, clientToken)
       if (!result) return reply.status(401).send({ error: 'Token inválido ou instância não encontrada' })
       const { instance, userId } = result
       if (instance.status !== 'connected') return reply.status(503).send({ error: 'WhatsApp não conectado' })
 
-      const resolved = resolveMedia(req.body.mediaUrl, req.body.mediaBase64, req.body.mimetype)
+      const resolved = await resolveMedia(req.body.mediaUrl, req.body.mediaBase64, req.body.mimetype)
       if (!resolved) return reply.status(400).send({ error: 'Informe mediaUrl ou mediaBase64' })
 
-      const jid = req.body.phone.replace(/\D/g, '') + '@s.whatsapp.net'
       try {
-        const messageId = await instance.sendMedia(jid, 'document', resolved.media, {
-          mimetype: resolved.mimetype,
-          filename: req.body.filename,
-          caption: req.body.caption,
-        })
-        const record = await prisma.baileysMessage.create({
+        const messageId = await instance.sendMedia(
+          req.body.phone, 'document',
+          { ...resolved, filename: req.body.filename },
+          { caption: req.body.caption },
+        )
+        const record = await prisma.wppwebMessage.create({
           data: { userId, instanceId: req.params.id, messageId: messageId ?? null, ip: req.ip ?? null },
         })
         return { zapnitId: record.id, messageId: messageId ?? null }
@@ -201,59 +210,25 @@ export default async function baileysRoutes(app: FastifyInstance) {
     }
   )
 
-  // GET /instances/:id/qr-code — retorna base64 do QR code atual (X-Client-Token)
-  app.get<{ Params: Params }>('/instances/:id/qr-code', async (req, reply) => {
+  // GET /wpp-instances/:id/qr-code — retorna base64 do QR code atual (X-Client-Token)
+  app.get<{ Params: Params }>('/wpp-instances/:id/qr-code', async (req, reply) => {
     const clientToken = req.headers['x-client-token']
     if (!clientToken || typeof clientToken !== 'string') {
       return reply.status(401).send({ error: 'X-Client-Token ausente' })
     }
 
-    const result = await baileysManager.getByUserToken(req.params.id, clientToken)
+    const result = await wppwebManager.getByUserToken(req.params.id, clientToken)
     if (!result) return reply.status(401).send({ error: 'Token inválido ou instância não encontrada' })
 
     const { instance } = result
     if (instance.status !== 'qr' || !instance.qrDataUrl) {
       return reply.status(409).send({ error: 'QR code não disponível', status: instance.status })
     }
-
     return { qrBase64: instance.qrDataUrl }
   })
 
-  // POST /instances/:id/pairing-code — solicita código de 8 caracteres para vincular sem QR (X-Client-Token)
-  app.post<{ Params: Params; Body: { phone: string } }>(
-    '/instances/:id/pairing-code',
-    {
-      schema: {
-        body: {
-          type: 'object',
-          required: ['phone'],
-          properties: {
-            phone: { type: 'string' },
-          },
-        },
-      },
-    },
-    async (req, reply) => {
-      const clientToken = req.headers['x-client-token']
-      if (!clientToken || typeof clientToken !== 'string') {
-        return reply.status(401).send({ error: 'X-Client-Token ausente' })
-      }
-
-      const result = await baileysManager.getByUserToken(req.params.id, clientToken)
-      if (!result) return reply.status(401).send({ error: 'Token inválido ou instância não encontrada' })
-
-      const { instance } = result
-      try {
-        const code = await instance.requestPairingCode(req.body.phone)
-        return { code }
-      } catch (err: unknown) {
-        return reply.status(409).send({ error: (err as Error).message })
-      }
-    }
-  )
-
-  // GET /instances/:id/events — SSE com JWT via query string (EventSource não suporta headers)
-  app.get<{ Params: Params; Querystring: EventsQuery }>('/instances/:id/events', async (req, reply) => {
+  // GET /wpp-instances/:id/events — SSE com JWT via query string
+  app.get<{ Params: Params; Querystring: EventsQuery }>('/wpp-instances/:id/events', async (req, reply) => {
     const queryToken = req.query.token
     if (!queryToken) return reply.status(401).send({ error: 'Token ausente' })
 
@@ -268,7 +243,7 @@ export default async function baileysRoutes(app: FastifyInstance) {
     const user = await prisma.user.findUnique({ where: { id: userId } })
     if (!user) return reply.status(401).send({ error: 'Unauthorized' })
 
-    const instance = baileysManager.getForUser(req.params.id, userId)
+    const instance = wppwebManager.getForUser(req.params.id, userId)
     if (!instance) return reply.status(404).send({ error: 'Instância não encontrada' })
 
     const raw = reply.raw
@@ -321,36 +296,60 @@ export default async function baileysRoutes(app: FastifyInstance) {
   await app.register(async (auth) => {
     auth.addHook('preHandler', authenticateUser)
 
-    // POST /instances — criar e iniciar nova instância
-    auth.post('/instances', async (req, reply) => {
+    // POST /wpp-instances — criar e iniciar nova instância (id de 32 chars)
+    auth.post('/wpp-instances', async (req, reply) => {
       const userId = req.authUser.id
-      const id = nanoid(12)
-      const instance = await baileysManager.create(id, userId)
-      instance.connect().catch(err => app.log.error(err, 'baileys connect error'))
+      const id = generateWppId()
+      const instance = await wppwebManager.create(id, userId)
+      instance.connect()
       return reply.status(201).send(instance.info())
     })
 
-    // GET /instances — listar instâncias do usuário
-    auth.get('/instances', async (req) => baileysManager.allForUser(req.authUser.id))
+    // GET /wpp-instances — listar instâncias do usuário
+    auth.get('/wpp-instances', async (req) => wppwebManager.allForUser(req.authUser.id))
 
-    // GET /instances/:id/status — status atual
-    auth.get<{ Params: Params }>('/instances/:id/status', async (req, reply) => {
-      const instance = baileysManager.getForUser(req.params.id, req.authUser.id)
+    // GET /wpp-instances/:id/status
+    auth.get<{ Params: Params }>('/wpp-instances/:id/status', async (req, reply) => {
+      const instance = wppwebManager.getForUser(req.params.id, req.authUser.id)
       if (!instance) return reply.status(404).send({ error: 'Instância não encontrada' })
       return instance.info()
     })
 
-    // DELETE /instances/:id — desconectar e remover instância
-    auth.delete<{ Params: Params }>('/instances/:id', async (req, reply) => {
-      const instance = baileysManager.getForUser(req.params.id, req.authUser.id)
+    // POST /wpp-instances/:id/pairing-code — código para vincular sem QR (JWT)
+    auth.post<{ Params: Params; Body: { phone: string } }>(
+      '/wpp-instances/:id/pairing-code',
+      {
+        schema: {
+          body: {
+            type: 'object',
+            required: ['phone'],
+            properties: { phone: { type: 'string' } },
+          },
+        },
+      },
+      async (req, reply) => {
+        const instance = wppwebManager.getForUser(req.params.id, req.authUser.id)
+        if (!instance) return reply.status(404).send({ error: 'Instância não encontrada' })
+        try {
+          const code = await instance.requestPairingCode(req.body.phone)
+          return { code }
+        } catch (err: unknown) {
+          return reply.status(409).send({ error: (err as Error).message })
+        }
+      }
+    )
+
+    // DELETE /wpp-instances/:id — desconectar e remover
+    auth.delete<{ Params: Params }>('/wpp-instances/:id', async (req, reply) => {
+      const instance = wppwebManager.getForUser(req.params.id, req.authUser.id)
       if (!instance) return reply.status(404).send({ error: 'Instância não encontrada' })
-      await baileysManager.remove(req.params.id)
+      await wppwebManager.remove(req.params.id)
       return reply.status(204).send()
     })
 
-    // PUT /instances/:id/webhook — configurar webhook
+    // PUT /wpp-instances/:id/webhook
     auth.put<{ Params: Params; Body: WebhookBody }>(
-      '/instances/:id/webhook',
+      '/wpp-instances/:id/webhook',
       {
         schema: {
           body: {
@@ -371,22 +370,22 @@ export default async function baileysRoutes(app: FastifyInstance) {
         const invalid = req.body.events.filter(e => !(WEBHOOK_EVENTS as readonly string[]).includes(e))
         if (invalid.length) return reply.status(400).send({ error: `Eventos inválidos: ${invalid.join(', ')}` })
 
-        const instance = await baileysManager.updateWebhook(req.params.id, req.authUser.id, req.body.url, req.body.events)
+        const instance = await wppwebManager.updateWebhook(req.params.id, req.authUser.id, req.body.url, req.body.events)
         if (!instance) return reply.status(404).send({ error: 'Instância não encontrada' })
         return instance.info()
       }
     )
 
-    // DELETE /instances/:id/webhook — remover webhook
-    auth.delete<{ Params: Params }>('/instances/:id/webhook', async (req, reply) => {
-      const instance = await baileysManager.updateWebhook(req.params.id, req.authUser.id, null, [])
+    // DELETE /wpp-instances/:id/webhook
+    auth.delete<{ Params: Params }>('/wpp-instances/:id/webhook', async (req, reply) => {
+      const instance = await wppwebManager.updateWebhook(req.params.id, req.authUser.id, null, [])
       if (!instance) return reply.status(404).send({ error: 'Instância não encontrada' })
       return reply.status(204).send()
     })
 
-    // PUT /instances/:id/ai — configurar IA Gemini
+    // PUT /wpp-instances/:id/ai — configurar IA Gemini
     auth.put<{ Params: Params; Body: AiConfigBody }>(
-      '/instances/:id/ai',
+      '/wpp-instances/:id/ai',
       {
         schema: {
           body: {
@@ -401,7 +400,7 @@ export default async function baileysRoutes(app: FastifyInstance) {
         },
       },
       async (req, reply) => {
-        const instance = await baileysManager.updateAi(
+        const instance = await wppwebManager.updateAi(
           req.params.id,
           req.authUser.id,
           req.body.aiEnabled,

@@ -38,10 +38,13 @@ services:
     container_name: zapnit-api
     restart: unless-stopped
     env_file: ./api/.env
+    environment:
+      WWEBJS_AUTH_PATH: /app/wwebjs_auth
     ports:
       - "3100:3100"
     volumes:
       - baileys_sessions:/app/sessions
+      - wppweb_sessions:/app/wwebjs_auth
     depends_on:
       db:
         condition: service_healthy
@@ -80,3 +83,4 @@ volumes:
   postgres_data:
   redis_data:
   baileys_sessions:
+  wppweb_sessions:

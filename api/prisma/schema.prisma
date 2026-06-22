@@ -174,6 +174,8 @@ model User {
   tenant    Tenant?           @relation(fields: [tenantId], references: [id])
   instances BaileysInstance[]
   messages  BaileysMessage[]
+  wppwebInstances WppwebInstance[]
+  wppwebMessages  WppwebMessage[]
 
   @@map("users")
 }
@@ -243,4 +245,44 @@ model BaileysAuthState {
 
   @@id([instanceId, category, keyId])
   @@map("baileys_auth_state")
+}
+
+// ─── whatsapp-web.js (WPP Web) ──────────────────────────────────────────────
+// Parallel integration path to Baileys, backed by whatsapp-web.js (Puppeteer).
+// Instance ids are 32-char fixed strings (uppercase A-Z + digits). Session auth
+// state is persisted on disk by LocalAuth under WWEBJS_AUTH_PATH, not in the DB.
+model WppwebInstance {
+  id              String    @id
+  userId          String?   @map("user_id")
+  status          String    @default("disconnected")
+  waNumber        String?   @map("wa_number")
+  waName          String?   @map("wa_name")
+  connectedAt     DateTime? @map("connected_at")
+  webhookUrl      String?   @map("webhook_url")
+  webhookEvents   String[]  @map("webhook_events")
+  aiEnabled       Boolean   @default(false) @map("ai_enabled")
+  aiSystemPrompt  String?   @db.Text @map("ai_system_prompt")
+  qrCodeDetection Boolean   @default(false) @map("qr_code_detection")
+  createdAt       DateTime  @default(now()) @map("created_at")
+  updatedAt       DateTime  @updatedAt @map("updated_at")
+
+  user     User?            @relation(fields: [userId], references: [id])
+  messages WppwebMessage[]
+
+  @@map("wppweb_instances")
+}
+
+model WppwebMessage {
+  id         String   @id @default(cuid())
+  userId     String   @map("user_id")
+  instanceId String   @map("instance_id")
+  messageId  String?  @map("message_id")
+  origin     String   @default("api")
+  ip         String?
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  user     User           @relation(fields: [userId], references: [id])
+  instance WppwebInstance @relation(fields: [instanceId], references: [id], onDelete: Cascade)
+
+  @@map("wppweb_messages")
 }
