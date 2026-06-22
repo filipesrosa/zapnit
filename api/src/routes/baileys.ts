@@ -2,6 +2,7 @@ import type { FastifyInstance } from 'fastify'
 import { nanoid } from 'nanoid'
 import { baileysManager, WEBHOOK_EVENTS } from '../services/baileys.js'
 import { authenticateUser } from '../middleware/auth.js'
+import { requireActiveSubscription } from '../middleware/payment.js'
 import { prisma } from '../db.js'
 import { incrementUserMessages } from '../lib/quota.js'
 
@@ -326,8 +327,8 @@ export default async function baileysRoutes(app: FastifyInstance) {
   await app.register(async (auth) => {
     auth.addHook('preHandler', authenticateUser)
 
-    // POST /instances — criar e iniciar nova instância
-    auth.post('/instances', async (req, reply) => {
+    // POST /instances — criar e iniciar nova instância (exige assinatura ativa)
+    auth.post('/instances', { preHandler: requireActiveSubscription }, async (req, reply) => {
       const userId = req.authUser.id
       const id = nanoid(12)
       const instance = await baileysManager.create(id, userId)

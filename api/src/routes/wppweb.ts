@@ -2,6 +2,7 @@ import type { FastifyInstance } from 'fastify'
 import { randomBytes } from 'crypto'
 import { wppwebManager, WEBHOOK_EVENTS } from '../services/wppweb.js'
 import { authenticateUser } from '../middleware/auth.js'
+import { requireActiveSubscription } from '../middleware/payment.js'
 import { prisma } from '../db.js'
 import { incrementUserMessages } from '../lib/quota.js'
 
@@ -301,8 +302,8 @@ export default async function wppwebRoutes(app: FastifyInstance) {
   await app.register(async (auth) => {
     auth.addHook('preHandler', authenticateUser)
 
-    // POST /wpp-instances — criar e iniciar nova instância (id de 32 chars)
-    auth.post('/wpp-instances', async (req, reply) => {
+    // POST /wpp-instances — criar e iniciar nova instância (exige assinatura ativa)
+    auth.post('/wpp-instances', { preHandler: requireActiveSubscription }, async (req, reply) => {
       const userId = req.authUser.id
       const id = generateWppId()
       const instance = await wppwebManager.create(id, userId)

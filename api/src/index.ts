@@ -15,6 +15,7 @@ import plansRoutes from './routes/plans.js'
 import baileysRoutes from './routes/baileys.js'
 import wppwebRoutes from './routes/wppweb.js'
 import billingRoutes from './routes/billing.js'
+import adminRoutes from './routes/admin.js'
 import { baileysManager } from './services/baileys.js'
 import { wppwebManager } from './services/wppweb.js'
 
@@ -82,6 +83,7 @@ await app.register(plansRoutes,   { prefix: '/api/v1/plans' })
 await app.register(baileysRoutes,  { prefix: '' })
 await app.register(wppwebRoutes,    { prefix: '' })
 await app.register(billingRoutes,  { prefix: '/billing' })
+await app.register(adminRoutes,    { prefix: '/admin' })
 
 // Health check
 app.get('/health', async () => ({

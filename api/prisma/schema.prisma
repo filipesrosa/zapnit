@@ -8,16 +8,17 @@ datasource db {
 }
 
 model Plan {
-  id             String   @id @default(cuid())
-  name           String
-  slug           String   @unique
-  monthlyQuota   Int      @map("monthly_quota")
-  price          Decimal  @db.Decimal(10, 2)
-  features       Json?
-  isActive       Boolean  @default(true) @map("is_active")
-  gatewayPriceId String?  @map("gateway_price_id")
-  createdAt      DateTime @default(now()) @map("created_at")
-  updatedAt      DateTime @updatedAt @map("updated_at")
+  id              String   @id @default(cuid())
+  name            String
+  slug            String   @unique
+  monthlyQuota    Int      @map("monthly_quota")
+  price           Decimal  @db.Decimal(10, 2)
+  billingInterval String   @default("monthly") @map("billing_interval")
+  features        Json?
+  isActive        Boolean  @default(true) @map("is_active")
+  gatewayPriceId  String?  @map("gateway_price_id")
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
 
   tenants Tenant[]
 

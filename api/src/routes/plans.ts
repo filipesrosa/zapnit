@@ -15,16 +15,20 @@ interface CreatePlanBody {
   slug: string
   monthlyQuota: number
   price: number
+  billingInterval?: 'monthly' | 'annual'
   features?: string[]
   isActive?: boolean
+  gatewayPriceId?: string
 }
 
 interface UpdatePlanBody {
   name?: string
   monthlyQuota?: number
   price?: number
+  billingInterval?: 'monthly' | 'annual'
   features?: string[]
   isActive?: boolean
+  gatewayPriceId?: string
 }
 
 interface PlanParams {
@@ -32,20 +36,22 @@ interface PlanParams {
 }
 
 export default async function plansRoutes(app: FastifyInstance): Promise<void> {
-  // GET /api/v1/plans — Lista planos ativos (público)
+  // GET /api/v1/plans — Lista planos ativos, agrupados por intervalo (público)
   app.get('/', async () => {
-    return prisma.plan.findMany({
+    const plans = await prisma.plan.findMany({
       where: { isActive: true },
-      orderBy: { price: 'asc' },
-      select: {
-        id: true,
-        name: true,
-        slug: true,
-        monthlyQuota: true,
-        price: true,
-        features: true
-      }
+      orderBy: [{ billingInterval: 'asc' }, { price: 'asc' }],
+      select: { id: true, name: true, slug: true, monthlyQuota: true, price: true, billingInterval: true, features: true }
     })
+
+    // For annual plans, expose the effective monthly equivalent price
+    return plans.map(p => ({
+      ...p,
+      billing_interval: p.billingInterval,
+      effective_monthly_price: p.billingInterval === 'annual'
+        ? Number(p.price) / 12
+        : Number(p.price),
+    }))
   })
 
   // GET /api/v1/plans/:id — Detalhe de um plano (público)
@@ -62,25 +68,27 @@ export default async function plansRoutes(app: FastifyInstance): Promise<void> {
         type: 'object',
         required: ['name', 'slug', 'monthlyQuota', 'price'],
         properties: {
-          name:         { type: 'string' },
-          slug:         { type: 'string' },
-          monthlyQuota: { type: 'integer' },
-          price:        { type: 'number' },
-          features:     { type: 'array', items: { type: 'string' } },
-          isActive:     { type: 'boolean', default: true }
+          name:            { type: 'string' },
+          slug:            { type: 'string' },
+          monthlyQuota:    { type: 'integer' },
+          price:           { type: 'number' },
+          billingInterval: { type: 'string', enum: ['monthly', 'annual'], default: 'monthly' },
+          features:        { type: 'array', items: { type: 'string' } },
+          isActive:        { type: 'boolean', default: true },
+          gatewayPriceId:  { type: 'string' },
         }
       }
     }
   }, async (req, reply) => {
     if (adminGuard(req, reply)) return
 
-    const { name, slug, monthlyQuota, price, features, isActive = true } = req.body
+    const { name, slug, monthlyQuota, price, billingInterval = 'monthly', features, isActive = true, gatewayPriceId } = req.body
 
     const existing = await prisma.plan.findUnique({ where: { slug } })
     if (existing) return reply.status(409).send({ error: 'Slug already in use' })
 
     const plan = await prisma.plan.create({
-      data: { name, slug, monthlyQuota, price, features, isActive }
+      data: { name, slug, monthlyQuota, price, billingInterval, features, isActive, gatewayPriceId }
     })
 
     return reply.status(201).send(plan)
@@ -92,11 +100,13 @@ export default async function plansRoutes(app: FastifyInstance): Promise<void> {
       body: {
         type: 'object',
         properties: {
-          name:         { type: 'string' },
-          monthlyQuota: { type: 'integer' },
-          price:        { type: 'number' },
-          features:     { type: 'array', items: { type: 'string' } },
-          isActive:     { type: 'boolean' }
+          name:            { type: 'string' },
+          monthlyQuota:    { type: 'integer' },
+          price:           { type: 'number' },
+          billingInterval: { type: 'string', enum: ['monthly', 'annual'] },
+          features:        { type: 'array', items: { type: 'string' } },
+          isActive:        { type: 'boolean' },
+          gatewayPriceId:  { type: 'string' },
         }
       }
     }

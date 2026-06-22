@@ -21,6 +21,7 @@ export default async function billingRoutes(app: FastifyInstance): Promise<void>
         slug: true,
         monthlyQuota: true,
         price: true,
+        billingInterval: true,
         features: true,
         gatewayPriceId: true
       }
@@ -31,6 +32,8 @@ export default async function billingRoutes(app: FastifyInstance): Promise<void>
       slug: p.slug,
       monthly_quota: p.monthlyQuota,
       price: p.price,
+      billing_interval: p.billingInterval,
+      effective_monthly_price: p.billingInterval === 'annual' ? Number(p.price) / 12 : Number(p.price),
       features: p.features,
       gateway_price_id: p.gatewayPriceId,
       is_free: p.slug === 'free'
@@ -126,11 +129,22 @@ export default async function billingRoutes(app: FastifyInstance): Promise<void>
   })
 
   // POST /billing/webhook — recebe notificações do gateway (sem auth, valida assinatura)
+  // Stripe sends stripe-signature; MercadoPago sends x-signature + x-request-id.
+  // Raw body must be preserved for HMAC verification — parsed via buffer content-type parser.
+  app.addContentTypeParser('application/json', { parseAs: 'buffer' }, (req, body, done) => {
+    req.rawBody = body as Buffer
+    try { done(null, JSON.parse((body as Buffer).toString())) }
+    catch (err) { done(err as Error) }
+  })
+
   app.post('/webhook', async (req, reply) => {
-    const signature = (req.headers['x-signature'] as string) ?? ''
+    const isStripe = !!(req.headers['stripe-signature'])
+    const signature = isStripe
+      ? (req.headers['stripe-signature'] as string)
+      : ((req.headers['x-signature'] as string) ?? '')
     const requestId = req.headers['x-request-id'] as string | undefined
 
-    const rawBody = Buffer.from(JSON.stringify(req.body))
+    const rawBody = req.rawBody ?? Buffer.from(JSON.stringify(req.body))
 
     let event
     try {

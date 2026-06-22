@@ -4,5 +4,6 @@ declare module 'fastify' {
   interface FastifyRequest {
     tenant: Tenant & { plan: Plan }
     authUser: User
+    rawBody?: Buffer
   }
 }
