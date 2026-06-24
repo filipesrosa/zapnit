@@ -19,10 +19,12 @@ function mapStatus(s: Stripe.Subscription.Status): GatewaySubscription['status']
 
 function mapSubscription(sub: Stripe.Subscription): GatewaySubscription {
   const item = sub.items.data[0]
+  // current_period_end exists at runtime but Stripe SDK v22 types changed the shape
+  const periodEnd = (sub as unknown as Record<string, number>)['current_period_end']
   return {
     id: sub.id,
     status: mapStatus(sub.status),
-    currentPeriodEnd: new Date(sub.current_period_end * 1000),
+    currentPeriodEnd: new Date(periodEnd * 1000),
     priceId: item?.price.id ?? '',
     customerId: typeof sub.customer === 'string' ? sub.customer : sub.customer.id,
   }
@@ -99,9 +101,9 @@ export class StripeGateway implements PaymentGateway {
       }
       case 'invoice.payment_failed': {
         const invoice = event.data.object as Stripe.Invoice
-        const subId = typeof invoice.subscription === 'string'
-          ? invoice.subscription
-          : invoice.subscription?.id ?? ''
+        // subscription field exists at runtime; SDK v22 types changed its shape
+        const sub = (invoice as unknown as Record<string, unknown>)['subscription']
+        const subId = typeof sub === 'string' ? sub : (sub as { id?: string } | null)?.id ?? ''
         return { type: 'payment.failed', subscriptionId: subId }
       }
       default:
