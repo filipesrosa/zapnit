@@ -11,8 +11,8 @@ RUN pnpm install --frozen-lockfile
 
 FROM deps AS build
 COPY . .
-RUN pnpm run db:generate
-RUN pnpm run build
+RUN ./node_modules/.bin/prisma generate
+RUN ./node_modules/.bin/tsc
 
 FROM base AS runner
 ENV NODE_ENV=production
