@@ -2,9 +2,9 @@ import type { FastifyInstance } from 'fastify'
 import { nanoid } from 'nanoid'
 import { baileysManager, WEBHOOK_EVENTS } from '../services/baileys.js'
 import { authenticateUser } from '../middleware/auth.js'
-import { requireActiveSubscription } from '../middleware/payment.js'
 import { prisma } from '../db.js'
-import { incrementUserMessages } from '../lib/quota.js'
+import { qrMessagesQueue } from '../queues.js'
+import { getTrialWatermark } from '../services/systemConfig.js'
 
 interface Params { id: string }
 interface SendBody { phone: string; message: string }
@@ -15,20 +15,16 @@ interface EventsQuery { token?: string }
 interface WebhookBody { url: string; events: string[] }
 interface AiConfigBody { aiEnabled: boolean; aiSystemPrompt?: string; qrCodeDetection?: boolean }
 
-function resolveMedia(
-  mediaUrl: string | undefined,
-  mediaBase64: string | undefined,
-  mimetype: string | undefined,
-): { media: Buffer | { url: string }; mimetype: string | undefined } | null {
-  if (mediaUrl) return { media: { url: mediaUrl }, mimetype }
-  if (!mediaBase64) return null
-  const dataUrlMatch = mediaBase64.match(/^data:([^;]+);base64,(.+)$/)
-  if (dataUrlMatch) {
-    return { media: Buffer.from(dataUrlMatch[2], 'base64'), mimetype: mimetype ?? dataUrlMatch[1] }
-  }
-  return { media: Buffer.from(mediaBase64, 'base64'), mimetype }
+function blockedReply(reply: any, activationStatus: string) {
+  return reply.status(402).send({
+    error: 'instance_not_active',
+    activation_status: activationStatus,
+    message: activationStatus === 'trial_expired'
+      ? 'Período de trial encerrado. Escolha um plano para continuar.'
+      : 'Instância pausada. Regularize o pagamento para continuar.',
+    payment_url: '/dashboard/billing',
+  })
 }
-
 
 export default async function baileysRoutes(app: FastifyInstance) {
   // POST /instances/:id/send-text — autenticado por X-Client-Token (sem JWT)
@@ -55,19 +51,30 @@ export default async function baileysRoutes(app: FastifyInstance) {
       const result = await baileysManager.getByUserToken(req.params.id, clientToken)
       if (!result) return reply.status(401).send({ error: 'Token inválido ou instância não encontrada' })
       const { instance, userId } = result
-      if (instance.status !== 'connected') return reply.status(503).send({ error: 'WhatsApp não conectado' })
 
-      const jid = req.body.phone.replace(/\D/g, '') + '@s.whatsapp.net'
-      try {
-        const messageId = await instance.sendText(jid, req.body.message)
-        const record = await prisma.baileysMessage.create({
-          data: { userId, instanceId: req.params.id, messageId: messageId ?? null, ip: req.ip ?? null }
-        })
-        incrementUserMessages(userId)
-        return { zapnitId: record.id, messageId: messageId ?? null }
-      } catch (err: unknown) {
-        return reply.status(500).send({ error: (err as Error).message })
+      if (instance.activationStatus === 'paused' || instance.activationStatus === 'trial_expired') {
+        return blockedReply(reply, instance.activationStatus)
       }
+
+      const isTrial = instance.activationStatus === 'trial'
+      const watermark = isTrial ? await getTrialWatermark() : ''
+      const message = isTrial ? `${req.body.message}\n\n${watermark}` : req.body.message
+
+      const record = await prisma.baileysMessage.create({
+        data: { userId, instanceId: req.params.id, messageId: null, ip: req.ip ?? null, status: 'queued' }
+      })
+
+      await qrMessagesQueue.add('send', {
+        zapnitId: record.id,
+        instanceId: req.params.id,
+        userId,
+        instanceType: 'baileys',
+        sendType: 'text',
+        phone: req.body.phone,
+        message,
+      })
+
+      return { zapnitId: record.id, status: 'queued' }
     }
   )
 
@@ -94,22 +101,32 @@ export default async function baileysRoutes(app: FastifyInstance) {
       const result = await baileysManager.getByUserToken(req.params.id, clientToken)
       if (!result) return reply.status(401).send({ error: 'Token inválido ou instância não encontrada' })
       const { instance, userId } = result
-      if (instance.status !== 'connected') return reply.status(503).send({ error: 'WhatsApp não conectado' })
 
-      const resolved = resolveMedia(req.body.mediaUrl, req.body.mediaBase64, undefined)
-      if (!resolved) return reply.status(400).send({ error: 'Informe mediaUrl ou mediaBase64' })
-
-      const jid = req.body.phone.replace(/\D/g, '') + '@s.whatsapp.net'
-      try {
-        const messageId = await instance.sendMedia(jid, 'image', resolved.media, { caption: req.body.caption })
-        const record = await prisma.baileysMessage.create({
-          data: { userId, instanceId: req.params.id, messageId: messageId ?? null, ip: req.ip ?? null },
-        })
-        incrementUserMessages(userId)
-        return { zapnitId: record.id, messageId: messageId ?? null }
-      } catch (err: unknown) {
-        return reply.status(500).send({ error: (err as Error).message })
+      if (instance.activationStatus === 'paused' || instance.activationStatus === 'trial_expired') {
+        return blockedReply(reply, instance.activationStatus)
       }
+
+      if (!req.body.mediaUrl && !req.body.mediaBase64) {
+        return reply.status(400).send({ error: 'Informe mediaUrl ou mediaBase64' })
+      }
+
+      const isTrial = instance.activationStatus === 'trial'
+      const watermark = isTrial ? await getTrialWatermark() : ''
+      const caption = isTrial
+        ? `${req.body.caption ?? ''}\n\n${watermark}`.trim()
+        : req.body.caption
+
+      const record = await prisma.baileysMessage.create({
+        data: { userId, instanceId: req.params.id, messageId: null, ip: req.ip ?? null, status: 'queued' },
+      })
+
+      await qrMessagesQueue.add('send', {
+        zapnitId: record.id, instanceId: req.params.id, userId,
+        instanceType: 'baileys', sendType: 'image',
+        phone: req.body.phone, mediaUrl: req.body.mediaUrl, mediaBase64: req.body.mediaBase64, caption,
+      })
+
+      return { zapnitId: record.id, status: 'queued' }
     }
   )
 
@@ -137,25 +154,27 @@ export default async function baileysRoutes(app: FastifyInstance) {
       const result = await baileysManager.getByUserToken(req.params.id, clientToken)
       if (!result) return reply.status(401).send({ error: 'Token inválido ou instância não encontrada' })
       const { instance, userId } = result
-      if (instance.status !== 'connected') return reply.status(503).send({ error: 'WhatsApp não conectado' })
 
-      const resolved = resolveMedia(req.body.mediaUrl, req.body.mediaBase64, req.body.mimetype)
-      if (!resolved) return reply.status(400).send({ error: 'Informe mediaUrl ou mediaBase64' })
-
-      const jid = req.body.phone.replace(/\D/g, '') + '@s.whatsapp.net'
-      try {
-        const messageId = await instance.sendMedia(jid, 'audio', resolved.media, {
-          mimetype: resolved.mimetype,
-          ptt: req.body.ptt,
-        })
-        const record = await prisma.baileysMessage.create({
-          data: { userId, instanceId: req.params.id, messageId: messageId ?? null, ip: req.ip ?? null },
-        })
-        incrementUserMessages(userId)
-        return { zapnitId: record.id, messageId: messageId ?? null }
-      } catch (err: unknown) {
-        return reply.status(500).send({ error: (err as Error).message })
+      if (instance.activationStatus === 'paused' || instance.activationStatus === 'trial_expired') {
+        return blockedReply(reply, instance.activationStatus)
       }
+
+      if (!req.body.mediaUrl && !req.body.mediaBase64) {
+        return reply.status(400).send({ error: 'Informe mediaUrl ou mediaBase64' })
+      }
+
+      const record = await prisma.baileysMessage.create({
+        data: { userId, instanceId: req.params.id, messageId: null, ip: req.ip ?? null, status: 'queued' },
+      })
+
+      await qrMessagesQueue.add('send', {
+        zapnitId: record.id, instanceId: req.params.id, userId,
+        instanceType: 'baileys', sendType: 'audio',
+        phone: req.body.phone, mediaUrl: req.body.mediaUrl, mediaBase64: req.body.mediaBase64,
+        mimetype: req.body.mimetype, ptt: req.body.ptt,
+      })
+
+      return { zapnitId: record.id, status: 'queued' }
     }
   )
 
@@ -184,26 +203,50 @@ export default async function baileysRoutes(app: FastifyInstance) {
       const result = await baileysManager.getByUserToken(req.params.id, clientToken)
       if (!result) return reply.status(401).send({ error: 'Token inválido ou instância não encontrada' })
       const { instance, userId } = result
-      if (instance.status !== 'connected') return reply.status(503).send({ error: 'WhatsApp não conectado' })
 
-      const resolved = resolveMedia(req.body.mediaUrl, req.body.mediaBase64, req.body.mimetype)
-      if (!resolved) return reply.status(400).send({ error: 'Informe mediaUrl ou mediaBase64' })
-
-      const jid = req.body.phone.replace(/\D/g, '') + '@s.whatsapp.net'
-      try {
-        const messageId = await instance.sendMedia(jid, 'document', resolved.media, {
-          mimetype: resolved.mimetype,
-          filename: req.body.filename,
-          caption: req.body.caption,
-        })
-        const record = await prisma.baileysMessage.create({
-          data: { userId, instanceId: req.params.id, messageId: messageId ?? null, ip: req.ip ?? null },
-        })
-        incrementUserMessages(userId)
-        return { zapnitId: record.id, messageId: messageId ?? null }
-      } catch (err: unknown) {
-        return reply.status(500).send({ error: (err as Error).message })
+      if (instance.activationStatus === 'paused' || instance.activationStatus === 'trial_expired') {
+        return blockedReply(reply, instance.activationStatus)
       }
+
+      if (!req.body.mediaUrl && !req.body.mediaBase64) {
+        return reply.status(400).send({ error: 'Informe mediaUrl ou mediaBase64' })
+      }
+
+      const isTrial = instance.activationStatus === 'trial'
+      const watermark = isTrial ? await getTrialWatermark() : ''
+      const caption = isTrial
+        ? `${req.body.caption ?? ''}\n\n${watermark}`.trim()
+        : req.body.caption
+
+      const record = await prisma.baileysMessage.create({
+        data: { userId, instanceId: req.params.id, messageId: null, ip: req.ip ?? null, status: 'queued' },
+      })
+
+      await qrMessagesQueue.add('send', {
+        zapnitId: record.id, instanceId: req.params.id, userId,
+        instanceType: 'baileys', sendType: 'document',
+        phone: req.body.phone, mediaUrl: req.body.mediaUrl, mediaBase64: req.body.mediaBase64,
+        filename: req.body.filename, caption, mimetype: req.body.mimetype,
+      })
+
+      return { zapnitId: record.id, status: 'queued' }
+    }
+  )
+
+  // GET /instances/:id/messages/:zapnitId — poll send status
+  app.get<{ Params: { id: string; zapnitId: string } }>(
+    '/instances/:id/messages/:zapnitId',
+    async (req, reply) => {
+      const clientToken = req.headers['x-client-token']
+      if (!clientToken || typeof clientToken !== 'string') return reply.status(401).send({ error: 'X-Client-Token ausente' })
+      const result = await baileysManager.getByUserToken(req.params.id, clientToken)
+      if (!result) return reply.status(401).send({ error: 'Token inválido ou instância não encontrada' })
+
+      const msg = await prisma.baileysMessage.findFirst({
+        where: { id: req.params.zapnitId, instanceId: req.params.id },
+      })
+      if (!msg) return reply.status(404).send({ error: 'Message not found' })
+      return { zapnitId: msg.id, status: msg.status, messageId: msg.messageId, error: msg.error, createdAt: msg.createdAt }
     }
   )
 
@@ -327,8 +370,8 @@ export default async function baileysRoutes(app: FastifyInstance) {
   await app.register(async (auth) => {
     auth.addHook('preHandler', authenticateUser)
 
-    // POST /instances — criar e iniciar nova instância (exige assinatura ativa)
-    auth.post('/instances', { preHandler: requireActiveSubscription }, async (req, reply) => {
+    // POST /instances — criar e iniciar nova instância (trial 2 dias)
+    auth.post('/instances', async (req, reply) => {
       const userId = req.authUser.id
       const id = nanoid(12)
       const instance = await baileysManager.create(id, userId)

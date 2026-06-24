@@ -19,6 +19,8 @@ type WAClient = InstanceType<typeof Client>
 
 export type MediaType = 'image' | 'audio' | 'video' | 'document'
 
+export type ActivationStatus = 'trial' | 'active' | 'paused' | 'trial_expired'
+
 export type InstanceStatus = 'disconnected' | 'qr' | 'connected'
 
 // Session auth state lives on disk (LocalAuth). Volume-mounted in Docker.
@@ -39,6 +41,8 @@ export interface InstanceInfo {
   id: string
   userId: string | null
   status: InstanceStatus
+  activationStatus: ActivationStatus
+  trialEndsAt: string
   qrDataUrl: string | null
   waNumber: string | null
   waName: string | null
@@ -59,6 +63,8 @@ class WppwebInstance extends EventEmitter {
   readonly id: string
   userId: string | null
   status: InstanceStatus = 'disconnected'
+  activationStatus: ActivationStatus
+  trialEndsAt: Date
   qrDataUrl: string | null = null
   waNumber: string | null = null
   waName: string | null = null
@@ -81,6 +87,8 @@ class WppwebInstance extends EventEmitter {
     aiEnabled: boolean = false,
     aiSystemPrompt: string | null = null,
     qrCodeDetection: boolean = false,
+    activationStatus: ActivationStatus = 'trial',
+    trialEndsAt: Date = new Date(Date.now() + 2 * 24 * 60 * 60 * 1000),
   ) {
     super()
     this.id = id
@@ -90,6 +98,8 @@ class WppwebInstance extends EventEmitter {
     this.aiEnabled = aiEnabled
     this.aiSystemPrompt = aiSystemPrompt
     this.qrCodeDetection = qrCodeDetection
+    this.activationStatus = activationStatus
+    this.trialEndsAt = trialEndsAt
   }
 
   private async _fireWebhook(event: string, data: unknown) {
@@ -220,6 +230,12 @@ class WppwebInstance extends EventEmitter {
       this._fireWebhook('messages.upsert', {
         from: msg.from, to: msg.to, body: msg.body, id: msg.id?._serialized, timestamp: msg.timestamp,
       })
+      // Update lastActivityAt on inbound messages
+      prisma.wppwebInstance.update({
+        where: { id: this.id },
+        data: { lastActivityAt: new Date() },
+      }).catch(() => {})
+
       if (this.aiEnabled || this.qrCodeDetection) {
         this._handleAiMessage(msg).catch(err =>
           console.error(`[wppweb] AI handle error ${this.id}`, err)
@@ -269,6 +285,7 @@ class WppwebInstance extends EventEmitter {
     return result?.id?._serialized ?? undefined
   }
 
+  // Destroy Chromium without touching LocalAuth files — auth preserved on disk for no-QR wake-up
   async destroy(): Promise<void> {
     if (this.client) {
       try { await this.client.destroy() } catch (_) {}
@@ -276,8 +293,10 @@ class WppwebInstance extends EventEmitter {
     }
     this.status = 'disconnected'
     this.qrDataUrl = null
+    this.starting = false
   }
 
+  // Logout: erases auth (LocalAuth files deleted). Only call on explicit user disconnect.
   async logout(): Promise<void> {
     if (this.client) {
       try { await this.client.logout() } catch (_) {}
@@ -288,11 +307,32 @@ class WppwebInstance extends EventEmitter {
     this.qrDataUrl = null
   }
 
+  // Resolves when connected; rejects on timeout. Used after wake-up.
+  waitForConnection(timeoutMs: number): Promise<void> {
+    if (this.status === 'connected') return Promise.resolve()
+    return new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        this.off('status', onStatus)
+        reject(new Error(`WPP Web connection timeout after ${timeoutMs}ms`))
+      }, timeoutMs)
+      const onStatus = (status: string) => {
+        if (status === 'connected') {
+          clearTimeout(timeout)
+          this.off('status', onStatus)
+          resolve()
+        }
+      }
+      this.on('status', onStatus)
+    })
+  }
+
   info(): InstanceInfo {
     return {
       id: this.id,
       userId: this.userId,
       status: this.status,
+      activationStatus: this.activationStatus,
+      trialEndsAt: this.trialEndsAt.toISOString(),
       qrDataUrl: this.qrDataUrl,
       waNumber: this.waNumber,
       waName: this.waName,
@@ -311,7 +351,19 @@ class WppwebManager {
 
   async init() {
     const rows = await prisma.wppwebInstance.findMany()
+    const now = new Date()
+
     for (const row of rows) {
+      // Sleeping instances are not loaded into memory — woken on demand
+      if (row.sleeping) continue
+
+      // Expire stale trials that passed during downtime
+      let activationStatus = row.activationStatus as ActivationStatus
+      if (activationStatus === 'trial' && row.trialEndsAt <= now) {
+        activationStatus = 'trial_expired'
+        prisma.wppwebInstance.update({ where: { id: row.id }, data: { activationStatus: 'trial_expired' } }).catch(() => {})
+      }
+
       const instance = new WppwebInstance(
         row.id,
         row.userId,
@@ -320,6 +372,8 @@ class WppwebManager {
         row.aiEnabled,
         row.aiSystemPrompt,
         row.qrCodeDetection,
+        activationStatus,
+        row.trialEndsAt,
       )
       this.instances.set(row.id, instance)
       this._watch(instance)
@@ -329,10 +383,11 @@ class WppwebManager {
 
   async create(id: string, userId: string | null = null): Promise<WppwebInstance> {
     if (this.instances.has(id)) return this.instances.get(id)!
-    const instance = new WppwebInstance(id, userId)
+    const trialEndsAt = new Date(Date.now() + 2 * 24 * 60 * 60 * 1000)
+    const instance = new WppwebInstance(id, userId, null, [], false, null, false, 'trial', trialEndsAt)
     this.instances.set(id, instance)
     this._watch(instance)
-    await prisma.wppwebInstance.create({ data: { id, userId } })
+    await prisma.wppwebInstance.create({ data: { id, userId, activationStatus: 'trial', trialEndsAt } })
     return instance
   }
 
@@ -349,6 +404,64 @@ class WppwebManager {
     if (!instance) return undefined
     instance.setAi(aiEnabled, aiSystemPrompt, qrCodeDetection)
     await prisma.wppwebInstance.update({ where: { id }, data: { aiEnabled, aiSystemPrompt, qrCodeDetection } })
+    return instance
+  }
+
+  async setActivationStatus(id: string, status: ActivationStatus): Promise<void> {
+    const instance = this.instances.get(id)
+    if (instance) {
+      instance.activationStatus = status
+      // Paused/expired: free Chromium memory, LocalAuth files preserved for reactivation
+      if (status === 'paused' || status === 'trial_expired') {
+        await instance.destroy()
+        this.instances.delete(id)
+      }
+    }
+    await prisma.wppwebInstance.update({ where: { id }, data: { activationStatus: status } })
+  }
+
+  async setActivationStatusForUserId(userId: string, status: ActivationStatus): Promise<void> {
+    const toDestroy: WppwebInstance[] = []
+    for (const inst of this.instances.values()) {
+      if (inst.userId === userId) {
+        inst.activationStatus = status
+        if (status === 'paused' || status === 'trial_expired') {
+          toDestroy.push(inst)
+        }
+      }
+    }
+    for (const inst of toDestroy) {
+      await inst.destroy()
+      this.instances.delete(inst.id)
+    }
+    await prisma.wppwebInstance.updateMany({ where: { userId }, data: { activationStatus: status } })
+  }
+
+  // Sleep: destroy Chromium without removing LocalAuth → no QR re-scan on wake-up
+  async sleep(id: string): Promise<void> {
+    const instance = this.instances.get(id)
+    if (!instance) return
+    await instance.destroy()
+    this.instances.delete(id)
+    await prisma.wppwebInstance.update({ where: { id }, data: { sleeping: true } })
+  }
+
+  // Wake up a sleeping instance: restore from DB, reconnect using LocalAuth on disk (no QR)
+  async wakeUp(id: string, userId: string): Promise<WppwebInstance | null> {
+    if (this.instances.has(id)) return this.instances.get(id)!
+    const row = await prisma.wppwebInstance.findUnique({ where: { id } })
+    if (!row || (row.userId && row.userId !== userId)) return null
+
+    const activationStatus = row.activationStatus as ActivationStatus
+    const instance = new WppwebInstance(
+      row.id, row.userId, row.webhookUrl, row.webhookEvents,
+      row.aiEnabled, row.aiSystemPrompt, row.qrCodeDetection,
+      activationStatus, row.trialEndsAt,
+    )
+    this.instances.set(id, instance)
+    this._watch(instance)
+    await prisma.wppwebInstance.update({ where: { id }, data: { sleeping: false } })
+    instance.connect()
     return instance
   }
 
@@ -404,6 +517,11 @@ class WppwebManager {
     return Array.from(this.instances.values())
       .filter(i => i.userId === userId)
       .map(i => i.info())
+  }
+
+  // For admin memory report
+  allInstances(): WppwebInstance[] {
+    return Array.from(this.instances.values())
   }
 }
 

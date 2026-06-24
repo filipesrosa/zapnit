@@ -22,6 +22,8 @@ import { decodeQRCode } from './qrcode-reader.js'
 
 export type MediaType = 'image' | 'audio' | 'video' | 'document'
 
+export type ActivationStatus = 'trial' | 'active' | 'paused' | 'trial_expired'
+
 const silentLogger = pino({ level: 'silent' })
 
 /**
@@ -81,6 +83,8 @@ export interface InstanceInfo {
   id: string
   userId: string | null
   status: InstanceStatus
+  activationStatus: ActivationStatus
+  trialEndsAt: string
   qrDataUrl: string | null
   waNumber: string | null
   waName: string | null
@@ -96,6 +100,8 @@ class BaileysInstance extends EventEmitter {
   readonly id: string
   userId: string | null
   status: InstanceStatus = 'disconnected'
+  activationStatus: ActivationStatus
+  trialEndsAt: Date
   qrDataUrl: string | null = null
   waNumber: string | null = null
   waName: string | null = null
@@ -125,6 +131,8 @@ class BaileysInstance extends EventEmitter {
     aiEnabled: boolean = false,
     aiSystemPrompt: string | null = null,
     qrCodeDetection: boolean = false,
+    activationStatus: ActivationStatus = 'trial',
+    trialEndsAt: Date = new Date(Date.now() + 2 * 24 * 60 * 60 * 1000),
   ) {
     super()
     this.id = id
@@ -134,6 +142,8 @@ class BaileysInstance extends EventEmitter {
     this.aiEnabled = aiEnabled
     this.aiSystemPrompt = aiSystemPrompt
     this.qrCodeDetection = qrCodeDetection
+    this.activationStatus = activationStatus
+    this.trialEndsAt = trialEndsAt
   }
 
   /** Wipe persisted Signal auth state for this instance (logout / disconnect). */
@@ -409,6 +419,14 @@ class BaileysInstance extends EventEmitter {
       }
       this._fireWebhook('messages.upsert', data)
 
+      // Update lastActivityAt on inbound messages
+      if (data.type === 'notify') {
+        prisma.baileysInstance.update({
+          where: { id: this.id },
+          data: { lastActivityAt: new Date() },
+        }).catch(() => {})
+      }
+
       if ((this.aiEnabled || this.qrCodeDetection) && data.type === 'notify') {
         for (const msg of data.messages) {
           if (!msg.key.fromMe && msg.message) {
@@ -427,6 +445,20 @@ class BaileysInstance extends EventEmitter {
     sock.ev.on('call', (data) => this._fireWebhook('call', data))
   }
 
+  // Close socket for sleep — does NOT clear Postgres auth state (preserves session for wake-up)
+  softDisconnect() {
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer)
+      this.reconnectTimer = null
+    }
+    if (this.sock) {
+      try { this.sock.end(undefined) } catch (_) {}
+      this.sock = null
+    }
+    this.status = 'disconnected'
+    this.qrDataUrl = null
+  }
+
   disconnect() {
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer)
@@ -439,6 +471,25 @@ class BaileysInstance extends EventEmitter {
     this.status = 'disconnected'
     this.qrDataUrl = null
     this._clearAuthState()
+  }
+
+  // Resolves when connected; rejects on timeout. Used after wake-up.
+  waitForConnection(timeoutMs: number): Promise<void> {
+    if (this.status === 'connected') return Promise.resolve()
+    return new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        this.off('status', onStatus)
+        reject(new Error(`Baileys connection timeout after ${timeoutMs}ms`))
+      }, timeoutMs)
+      const onStatus = (status: string) => {
+        if (status === 'connected') {
+          clearTimeout(timeout)
+          this.off('status', onStatus)
+          resolve()
+        }
+      }
+      this.on('status', onStatus)
+    })
   }
 
   async requestPairingCode(phoneNumber: string): Promise<string> {
@@ -498,6 +549,8 @@ class BaileysInstance extends EventEmitter {
       id: this.id,
       userId: this.userId,
       status: this.status,
+      activationStatus: this.activationStatus,
+      trialEndsAt: this.trialEndsAt.toISOString(),
       qrDataUrl: this.qrDataUrl,
       waNumber: this.waNumber,
       waName: this.waName,
@@ -516,7 +569,19 @@ class BaileysManager {
 
   async init() {
     const rows = await prisma.baileysInstance.findMany()
+    const now = new Date()
+
     for (const row of rows) {
+      // Sleeping instances are not loaded into memory — woken on demand
+      if (row.sleeping) continue
+
+      // Expire stale trials that passed during downtime
+      let activationStatus = row.activationStatus as ActivationStatus
+      if (activationStatus === 'trial' && row.trialEndsAt <= now) {
+        activationStatus = 'trial_expired'
+        prisma.baileysInstance.update({ where: { id: row.id }, data: { activationStatus: 'trial_expired' } }).catch(() => {})
+      }
+
       const instance = new BaileysInstance(
         row.id,
         row.userId,
@@ -525,6 +590,8 @@ class BaileysManager {
         row.aiEnabled,
         row.aiSystemPrompt,
         row.qrCodeDetection,
+        activationStatus,
+        row.trialEndsAt,
       )
       this.instances.set(row.id, instance)
       this._watch(instance)
@@ -534,10 +601,11 @@ class BaileysManager {
 
   async create(id: string, userId: string | null = null): Promise<BaileysInstance> {
     if (this.instances.has(id)) return this.instances.get(id)!
-    const instance = new BaileysInstance(id, userId)
+    const trialEndsAt = new Date(Date.now() + 2 * 24 * 60 * 60 * 1000)
+    const instance = new BaileysInstance(id, userId, null, [], false, null, false, 'trial', trialEndsAt)
     this.instances.set(id, instance)
     this._watch(instance)
-    await prisma.baileysInstance.create({ data: { id, userId } })
+    await prisma.baileysInstance.create({ data: { id, userId, activationStatus: 'trial', trialEndsAt } })
     return instance
   }
 
@@ -560,6 +628,47 @@ class BaileysManager {
       where: { id },
       data: { aiEnabled, aiSystemPrompt, qrCodeDetection },
     })
+    return instance
+  }
+
+  async setActivationStatus(id: string, status: ActivationStatus): Promise<void> {
+    const instance = this.instances.get(id)
+    if (instance) instance.activationStatus = status
+    await prisma.baileysInstance.update({ where: { id }, data: { activationStatus: status } })
+  }
+
+  async setActivationStatusForUserId(userId: string, status: ActivationStatus): Promise<void> {
+    for (const inst of this.instances.values()) {
+      if (inst.userId === userId) inst.activationStatus = status
+    }
+    await prisma.baileysInstance.updateMany({ where: { userId }, data: { activationStatus: status } })
+  }
+
+  // Sleep: close socket without clearing auth (auth preserved in Postgres → no QR re-scan on wake)
+  async sleep(id: string): Promise<void> {
+    const instance = this.instances.get(id)
+    if (!instance) return
+    instance.softDisconnect()
+    this.instances.delete(id)
+    await prisma.baileysInstance.update({ where: { id }, data: { sleeping: true } })
+  }
+
+  // Wake up a sleeping instance: restore from DB, reconnect using Postgres auth (no QR)
+  async wakeUp(id: string, userId: string): Promise<BaileysInstance | null> {
+    if (this.instances.has(id)) return this.instances.get(id)!
+    const row = await prisma.baileysInstance.findUnique({ where: { id } })
+    if (!row || (row.userId && row.userId !== userId)) return null
+
+    const activationStatus = row.activationStatus as ActivationStatus
+    const instance = new BaileysInstance(
+      row.id, row.userId, row.webhookUrl, row.webhookEvents,
+      row.aiEnabled, row.aiSystemPrompt, row.qrCodeDetection,
+      activationStatus, row.trialEndsAt,
+    )
+    this.instances.set(id, instance)
+    this._watch(instance)
+    await prisma.baileysInstance.update({ where: { id }, data: { sleeping: false } })
+    instance.connectWithRetry()
     return instance
   }
 
@@ -618,6 +727,11 @@ class BaileysManager {
     return Array.from(this.instances.values())
       .filter(i => i.userId === userId)
       .map(i => i.info())
+  }
+
+  // For admin memory report
+  allInstances(): BaileysInstance[] {
+    return Array.from(this.instances.values())
   }
 }
 

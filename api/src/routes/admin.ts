@@ -2,6 +2,7 @@ import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify'
 import { prisma } from '../db.js'
 import { baileysManager } from '../services/baileys.js'
 import { wppwebManager } from '../services/wppweb.js'
+import { invalidateConfigCache } from '../services/systemConfig.js'
 
 function adminGuard(req: FastifyRequest, reply: FastifyReply): boolean {
   const key = req.headers['x-admin-key']
@@ -35,6 +36,8 @@ export default async function adminRoutes(app: FastifyInstance): Promise<void> {
         id: i.id,
         type: 'baileys',
         status: i.status,
+        activation_status: i.activationStatus,
+        sleeping: i.sleeping,
         wa_number: i.waNumber,
         wa_name: i.waName,
         connected_at: i.connectedAt,
@@ -46,6 +49,8 @@ export default async function adminRoutes(app: FastifyInstance): Promise<void> {
         id: i.id,
         type: 'wppweb',
         status: i.status,
+        activation_status: i.activationStatus,
+        sleeping: i.sleeping,
         wa_number: i.waNumber,
         wa_name: i.waName,
         connected_at: i.connectedAt,
@@ -54,6 +59,47 @@ export default async function adminRoutes(app: FastifyInstance): Promise<void> {
         user: i.user ? { id: i.user.id, name: i.user.name, email: i.user.email } : null,
       })),
       totals: { baileys: baileys.length, wppweb: wppweb.length, total: baileys.length + wppweb.length },
+    }
+  })
+
+  // GET /admin/instances/memory-report — live memory accounting
+  app.get('/instances/memory-report', async (req, reply) => {
+    if (adminGuard(req, reply)) return
+
+    const [dbBaileys, dbWppweb] = await Promise.all([
+      prisma.baileysInstance.findMany({
+        select: { id: true, sleeping: true, webhookUrl: true, activationStatus: true },
+      }),
+      prisma.wppwebInstance.findMany({
+        select: { id: true, sleeping: true, webhookUrl: true, activationStatus: true },
+      }),
+    ])
+
+    const liveB = baileysManager.allInstances()
+    const liveW = wppwebManager.allInstances()
+
+    const bWebhookLocked = dbBaileys.filter(i => i.webhookUrl).length
+    const wWebhookLocked = dbWppweb.filter(i => i.webhookUrl).length
+    const bSleeping = dbBaileys.filter(i => i.sleeping).length
+    const wSleeping = dbWppweb.filter(i => i.sleeping).length
+
+    // RAM estimate: Baileys ~75 MB active, WPP Web ~300 MB active
+    const estimatedRamMb = (liveB.length * 75) + (liveW.length * 300)
+
+    return {
+      baileys: {
+        total: dbBaileys.length,
+        active_in_memory: liveB.length,
+        sleeping: bSleeping,
+        webhook_locked: bWebhookLocked,
+      },
+      wppweb: {
+        total: dbWppweb.length,
+        active_in_memory: liveW.length,
+        sleeping: wSleeping,
+        webhook_locked: wWebhookLocked,
+      },
+      estimated_ram_mb: estimatedRamMb,
     }
   })
 
@@ -75,6 +121,9 @@ export default async function adminRoutes(app: FastifyInstance): Promise<void> {
       id: instance.id,
       type: 'baileys',
       status: live?.status ?? instance.status,
+      activation_status: instance.activationStatus,
+      trial_ends_at: instance.trialEndsAt,
+      sleeping: instance.sleeping,
       wa_number: instance.waNumber,
       wa_name: instance.waName,
       connected_at: instance.connectedAt,
@@ -106,6 +155,9 @@ export default async function adminRoutes(app: FastifyInstance): Promise<void> {
       id: instance.id,
       type: 'wppweb',
       status: live?.status ?? instance.status,
+      activation_status: instance.activationStatus,
+      trial_ends_at: instance.trialEndsAt,
+      sleeping: instance.sleeping,
       wa_number: instance.waNumber,
       wa_name: instance.waName,
       connected_at: instance.connectedAt,
@@ -143,11 +195,39 @@ export default async function adminRoutes(app: FastifyInstance): Promise<void> {
 
     try {
       const live = wppwebManager.getForUser(instance.id, instance.userId ?? '')
-      if (live) await live.disconnect()
+      if (live) await live.logout()
     } catch { /* best-effort */ }
 
     await prisma.wppwebInstance.delete({ where: { id: req.params.id } })
     return { deleted: true, id: req.params.id }
+  })
+
+  // GET /admin/config — read system config (trial watermark, etc.)
+  app.get('/config', async (req, reply) => {
+    if (adminGuard(req, reply)) return
+    const config = await prisma.systemConfig.upsert({
+      where: { id: 'default' },
+      create: { id: 'default' },
+      update: {},
+    })
+    return { trial_watermark: config.trialWatermark }
+  })
+
+  // PATCH /admin/config — update system config
+  app.patch<{ Body: { trial_watermark?: string } }>('/config', async (req, reply) => {
+    if (adminGuard(req, reply)) return
+    const config = await prisma.systemConfig.upsert({
+      where: { id: 'default' },
+      create: {
+        id: 'default',
+        trialWatermark: req.body.trial_watermark ?? '_Enviado via Zapnit Trial — zapnit.com_',
+      },
+      update: {
+        ...(req.body.trial_watermark !== undefined && { trialWatermark: req.body.trial_watermark }),
+      },
+    })
+    invalidateConfigCache()
+    return { trial_watermark: config.trialWatermark }
   })
 
   // GET /admin/users — list users with their subscription and instance counts

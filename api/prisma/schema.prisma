@@ -40,6 +40,7 @@ model Tenant {
   gatewayPriceId        String?   @map("gateway_price_id")
   paymentStatus         String?   @map("payment_status")
   billingCycleEnd       DateTime? @map("billing_cycle_end")
+  lastBillingWarningAt  DateTime? @map("last_billing_warning_at")
   createdAt             DateTime  @default(now()) @map("created_at")
   updatedAt             DateTime  @updatedAt @map("updated_at")
 
@@ -182,19 +183,24 @@ model User {
 }
 
 model BaileysInstance {
-  id             String    @id
-  userId         String?   @map("user_id")
-  status         String    @default("disconnected")
-  waNumber       String?   @map("wa_number")
-  waName         String?   @map("wa_name")
-  connectedAt    DateTime? @map("connected_at")
-  webhookUrl     String?   @map("webhook_url")
-  webhookEvents  String[]  @map("webhook_events")
-  aiEnabled        Boolean   @default(false) @map("ai_enabled")
-  aiSystemPrompt   String?   @db.Text @map("ai_system_prompt")
-  qrCodeDetection  Boolean   @default(false) @map("qr_code_detection")
-  createdAt      DateTime  @default(now()) @map("created_at")
-  updatedAt      DateTime  @updatedAt @map("updated_at")
+  id                 String    @id
+  userId             String?   @map("user_id")
+  status             String    @default("disconnected")
+  activationStatus   String    @default("trial") @map("activation_status")
+  trialEndsAt        DateTime  @default(now()) @map("trial_ends_at")
+  trialWarningSentAt DateTime? @map("trial_warning_sent_at")
+  lastActivityAt     DateTime? @map("last_activity_at")
+  sleeping           Boolean   @default(false) @map("sleeping")
+  waNumber           String?   @map("wa_number")
+  waName             String?   @map("wa_name")
+  connectedAt        DateTime? @map("connected_at")
+  webhookUrl         String?   @map("webhook_url")
+  webhookEvents      String[]  @map("webhook_events")
+  aiEnabled          Boolean   @default(false) @map("ai_enabled")
+  aiSystemPrompt     String?   @db.Text @map("ai_system_prompt")
+  qrCodeDetection    Boolean   @default(false) @map("qr_code_detection")
+  createdAt          DateTime  @default(now()) @map("created_at")
+  updatedAt          DateTime  @updatedAt @map("updated_at")
 
   user         User?                @relation(fields: [userId], references: [id])
   messages     BaileysMessage[]
@@ -210,6 +216,8 @@ model BaileysMessage {
   instanceId String   @map("instance_id")
   messageId  String?  @map("message_id")
   origin     String   @default("api")
+  status     String   @default("queued")
+  error      String?  @db.Text
   ip         String?
   createdAt  DateTime @default(now()) @map("created_at")
 
@@ -253,19 +261,24 @@ model BaileysAuthState {
 // Instance ids are 32-char fixed strings (uppercase A-Z + digits). Session auth
 // state is persisted on disk by LocalAuth under WWEBJS_AUTH_PATH, not in the DB.
 model WppwebInstance {
-  id              String    @id
-  userId          String?   @map("user_id")
-  status          String    @default("disconnected")
-  waNumber        String?   @map("wa_number")
-  waName          String?   @map("wa_name")
-  connectedAt     DateTime? @map("connected_at")
-  webhookUrl      String?   @map("webhook_url")
-  webhookEvents   String[]  @map("webhook_events")
-  aiEnabled       Boolean   @default(false) @map("ai_enabled")
-  aiSystemPrompt  String?   @db.Text @map("ai_system_prompt")
-  qrCodeDetection Boolean   @default(false) @map("qr_code_detection")
-  createdAt       DateTime  @default(now()) @map("created_at")
-  updatedAt       DateTime  @updatedAt @map("updated_at")
+  id                 String    @id
+  userId             String?   @map("user_id")
+  status             String    @default("disconnected")
+  activationStatus   String    @default("trial") @map("activation_status")
+  trialEndsAt        DateTime  @default(now()) @map("trial_ends_at")
+  trialWarningSentAt DateTime? @map("trial_warning_sent_at")
+  lastActivityAt     DateTime? @map("last_activity_at")
+  sleeping           Boolean   @default(false) @map("sleeping")
+  waNumber           String?   @map("wa_number")
+  waName             String?   @map("wa_name")
+  connectedAt        DateTime? @map("connected_at")
+  webhookUrl         String?   @map("webhook_url")
+  webhookEvents      String[]  @map("webhook_events")
+  aiEnabled          Boolean   @default(false) @map("ai_enabled")
+  aiSystemPrompt     String?   @db.Text @map("ai_system_prompt")
+  qrCodeDetection    Boolean   @default(false) @map("qr_code_detection")
+  createdAt          DateTime  @default(now()) @map("created_at")
+  updatedAt          DateTime  @updatedAt @map("updated_at")
 
   user     User?            @relation(fields: [userId], references: [id])
   messages WppwebMessage[]
@@ -279,6 +292,8 @@ model WppwebMessage {
   instanceId String   @map("instance_id")
   messageId  String?  @map("message_id")
   origin     String   @default("api")
+  status     String   @default("queued")
+  error      String?  @db.Text
   ip         String?
   createdAt  DateTime @default(now()) @map("created_at")
 
@@ -286,4 +301,12 @@ model WppwebMessage {
   instance WppwebInstance @relation(fields: [instanceId], references: [id], onDelete: Cascade)
 
   @@map("wppweb_messages")
+}
+
+model SystemConfig {
+  id             String   @id @default("default")
+  trialWatermark String   @default("_Enviado via Zapnit Trial — zapnit.com_") @map("trial_watermark")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+
+  @@map("system_config")
 }

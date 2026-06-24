@@ -2,6 +2,12 @@ import type { FastifyInstance } from 'fastify'
 import { prisma } from '../db.js'
 import { authenticateUser } from '../middleware/auth.js'
 import { getPaymentGateway } from '../services/billing/index.js'
+import { baileysManager } from '../services/baileys.js'
+import { wppwebManager } from '../services/wppweb.js'
+import {
+  sendActivationConfirmationEmail,
+  sendPaymentFailedEmail,
+} from '../services/email.js'
 
 interface CheckoutBody {
   plan_id: string
@@ -160,7 +166,7 @@ export default async function billingRoutes(app: FastifyInstance): Promise<void>
 
     const tenant = await prisma.tenant.findFirst({
       where: { gatewaySubscriptionId: subscriptionId },
-      include: { plan: true }
+      include: { plan: true, user: true }
     })
 
     if (!tenant) {
@@ -181,16 +187,29 @@ export default async function billingRoutes(app: FastifyInstance): Promise<void>
             ...(plan && { planId: plan.id, monthlyQuota: plan.monthlyQuota })
           }
         })
+        if (tenant.user) {
+          const userId = tenant.user.id
+          await baileysManager.setActivationStatusForUserId(userId, 'active')
+          await wppwebManager.setActivationStatusForUserId(userId, 'active')
+          sendActivationConfirmationEmail(tenant.user).catch(() => {})
+        }
         break
       }
       case 'subscription.updated': {
+        const newStatus = subscription.status === 'active' ? 'active' : subscription.status
         await prisma.tenant.update({
           where: { id: tenant.id },
           data: {
-            paymentStatus: subscription.status === 'active' ? 'active' : subscription.status,
+            paymentStatus: newStatus,
             billingCycleEnd: subscription.currentPeriodEnd
           }
         })
+        if (tenant.user) {
+          const userId = tenant.user.id
+          const activationStatus = newStatus === 'active' ? 'active' : 'paused'
+          await baileysManager.setActivationStatusForUserId(userId, activationStatus)
+          await wppwebManager.setActivationStatusForUserId(userId, activationStatus)
+        }
         break
       }
       case 'subscription.canceled': {
@@ -203,6 +222,10 @@ export default async function billingRoutes(app: FastifyInstance): Promise<void>
             ...(freePlan && { planId: freePlan.id, monthlyQuota: freePlan.monthlyQuota })
           }
         })
+        if (tenant.user) {
+          await baileysManager.setActivationStatusForUserId(tenant.user.id, 'paused')
+          await wppwebManager.setActivationStatusForUserId(tenant.user.id, 'paused')
+        }
         break
       }
       case 'payment.failed': {
@@ -210,6 +233,12 @@ export default async function billingRoutes(app: FastifyInstance): Promise<void>
           where: { id: tenant.id },
           data: { paymentStatus: 'past_due' }
         })
+        if (tenant.user) {
+          const renewalUrl = `${process.env.APP_BASE_URL ?? ''}/dashboard/billing`
+          await baileysManager.setActivationStatusForUserId(tenant.user.id, 'paused')
+          await wppwebManager.setActivationStatusForUserId(tenant.user.id, 'paused')
+          sendPaymentFailedEmail(tenant.user, renewalUrl).catch(() => {})
+        }
         break
       }
     }

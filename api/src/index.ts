@@ -18,6 +18,7 @@ import billingRoutes from './routes/billing.js'
 import adminRoutes from './routes/admin.js'
 import { baileysManager } from './services/baileys.js'
 import { wppwebManager } from './services/wppweb.js'
+import { startQrMessageWorker, attachQrWorkerFailureHandler } from './jobs/qrMessageWorker.js'
 
 const app = Fastify({
   logger: {
@@ -93,11 +94,17 @@ app.get('/health', async () => ({
   timestamp: new Date().toISOString()
 }))
 
-// Recarrega instâncias Baileys persistidas no banco
-baileysManager.init().catch(err => app.log.error(err, 'baileys init error'))
-
-// Recarrega instâncias WPP Web (whatsapp-web.js) persistidas no banco
-wppwebManager.init().catch(err => app.log.error(err, 'wppweb init error'))
+// Init managers sequentially so both are ready before the QR send worker starts
+try {
+  await Promise.all([
+    baileysManager.init(),
+    wppwebManager.init(),
+  ])
+} catch (err) {
+  app.log.error(err, 'manager init error')
+}
+const qrWorker = startQrMessageWorker()
+attachQrWorkerFailureHandler(qrWorker)
 
 // Handler global de erros de validação
 app.setErrorHandler((err: FastifyError, _req, reply) => {
