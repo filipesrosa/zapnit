@@ -89,14 +89,18 @@ async function runTrialExpiry() {
     }),
   ])
 
-  for (const inst of [...warnBaileys, ...warnWppweb]) {
+  for (const inst of warnBaileys) {
     if (!inst.user) continue
     const hoursLeft = Math.ceil((inst.trialEndsAt.getTime() - now.getTime()) / (60 * 60 * 1000))
     await sendTrialExpiryWarningEmail(inst.user, hoursLeft, upgradeUrl).catch(() => {})
-    const model = 'webhookUrl' in inst && inst.id.length === 12
-      ? prisma.baileysInstance
-      : prisma.wppwebInstance
-    await (model as any).update({ where: { id: inst.id }, data: { trialWarningSentAt: now } })
+    await prisma.baileysInstance.update({ where: { id: inst.id }, data: { trialWarningSentAt: now } })
+  }
+
+  for (const inst of warnWppweb) {
+    if (!inst.user) continue
+    const hoursLeft = Math.ceil((inst.trialEndsAt.getTime() - now.getTime()) / (60 * 60 * 1000))
+    await sendTrialExpiryWarningEmail(inst.user, hoursLeft, upgradeUrl).catch(() => {})
+    await prisma.wppwebInstance.update({ where: { id: inst.id }, data: { trialWarningSentAt: now } })
   }
 }
 

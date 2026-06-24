@@ -43,6 +43,7 @@ export interface InstanceInfo {
   status: InstanceStatus
   activationStatus: ActivationStatus
   trialEndsAt: string
+  sleeping: boolean
   qrDataUrl: string | null
   waNumber: string | null
   waName: string | null
@@ -333,6 +334,7 @@ class WppwebInstance extends EventEmitter {
       status: this.status,
       activationStatus: this.activationStatus,
       trialEndsAt: this.trialEndsAt.toISOString(),
+      sleeping: false, // in-memory instances are never sleeping (sleeping ones are removed from map)
       qrDataUrl: this.qrDataUrl,
       waNumber: this.waNumber,
       waName: this.waName,
