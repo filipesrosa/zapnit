@@ -5,7 +5,6 @@ import { authenticateUser } from '../middleware/auth.js'
 import { prisma } from '../db.js'
 import { qrMessagesQueue } from '../queues.js'
 import { getTrialWatermark } from '../services/systemConfig.js'
-import { TEST_PREFIX } from '../lib/testPrefix.js'
 
 interface Params { id: string }
 interface SendBody { phone: string; message: string }
@@ -68,9 +67,7 @@ export default async function wppwebRoutes(app: FastifyInstance) {
 
       const isTrial = instance.activationStatus === 'trial'
       const watermark = isTrial ? await getTrialWatermark() : ''
-      const message = isTrial
-        ? `${TEST_PREFIX}${req.body.message}\n\n${watermark}`
-        : `${TEST_PREFIX}${req.body.message}`
+      const message = isTrial ? `${watermark}\n\n${req.body.message}` : req.body.message
 
       const record = await prisma.wppwebMessage.create({
         data: { userId, instanceId: req.params.id, messageId: null, ip: req.ip ?? null, status: 'queued' },
@@ -121,8 +118,8 @@ export default async function wppwebRoutes(app: FastifyInstance) {
       const isTrial = instance.activationStatus === 'trial'
       const watermark = isTrial ? await getTrialWatermark() : ''
       const caption = isTrial
-        ? `${TEST_PREFIX}${req.body.caption ?? ''}\n\n${watermark}`.trim()
-        : `${TEST_PREFIX}${req.body.caption ?? ''}`.trim() || undefined
+        ? `${watermark}\n\n${req.body.caption ?? ''}`.trim()
+        : req.body.caption
 
       const record = await prisma.wppwebMessage.create({
         data: { userId, instanceId: req.params.id, messageId: null, ip: req.ip ?? null, status: 'queued' },
@@ -223,8 +220,8 @@ export default async function wppwebRoutes(app: FastifyInstance) {
       const isTrial = instance.activationStatus === 'trial'
       const watermark = isTrial ? await getTrialWatermark() : ''
       const caption = isTrial
-        ? `${TEST_PREFIX}${req.body.caption ?? ''}\n\n${watermark}`.trim()
-        : `${TEST_PREFIX}${req.body.caption ?? ''}`.trim() || undefined
+        ? `${watermark}\n\n${req.body.caption ?? ''}`.trim()
+        : req.body.caption
 
       const record = await prisma.wppwebMessage.create({
         data: { userId, instanceId: req.params.id, messageId: null, ip: req.ip ?? null, status: 'queued' },
