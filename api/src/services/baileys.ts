@@ -64,6 +64,27 @@ class TTLCache implements CacheStore {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Baileys version cache — fetchLatestBaileysVersion() makes an HTTP request on
+// every connect(). With exponential-backoff reconnects this adds latency and
+// can fail during network hiccups. Cache the result for 5 minutes so rapid
+// reconnect cycles reuse the last known-good version instead of hitting the
+// network every time.
+// ---------------------------------------------------------------------------
+let _cachedVersion: { version: number[]; isLatest: boolean } | null = null
+let _versionFetchedAt = 0
+const VERSION_CACHE_TTL_MS = 5 * 60 * 1000 // 5 minutes
+
+async function getBaileysVersion(): Promise<{ version: number[]; isLatest: boolean }> {
+  if (_cachedVersion && Date.now() - _versionFetchedAt < VERSION_CACHE_TTL_MS) {
+    return _cachedVersion
+  }
+  const result = await fetchLatestBaileysVersion()
+  _cachedVersion = result
+  _versionFetchedAt = Date.now()
+  return result
+}
+
 export type InstanceStatus = 'disconnected' | 'qr' | 'connected'
 
 export const WEBHOOK_EVENTS = [
@@ -115,10 +136,12 @@ class BaileysInstance extends EventEmitter {
 
   private sock: WASocket | null = null
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null
+  private cleanupTimer: ReturnType<typeof setInterval> | null = null
   private reconnectAttempts = 0
   private connecting = false
-  private messageStore = new Map<string, proto.IMessage>()
-  private readonly MESSAGE_STORE_LIMIT = 500
+  // No in-memory messageStore — getMessage reads directly from Postgres so
+  // messages survive restarts, server crashes, and sleep/wake cycles without
+  // any size cap. The DB is the single source of truth.
   // Persisted across reconnects so retry-receipt state isn't lost when the
   // socket is recreated (the Baileys-internal default caches would be wiped).
   private readonly msgRetryCounterCache: CacheStore = new TTLCache(60 * 60 * 1000)
@@ -193,11 +216,9 @@ class BaileysInstance extends EventEmitter {
   }
 
   private _storeMessage(id: string, message: proto.IMessage) {
-    if (this.messageStore.size >= this.MESSAGE_STORE_LIMIT) {
-      this.messageStore.delete(this.messageStore.keys().next().value!)
-    }
-    this.messageStore.set(id, message)
-    // Persist to DB so getMessage survives restarts
+    // Write directly to DB — no in-memory Map. This means getMessage always
+    // reads from Postgres, giving consistent behaviour across restarts, crashes,
+    // and sleep/wake cycles without any message count limit.
     prisma.baileysMessageStore.upsert({
       where: { instanceId_messageId: { instanceId: this.id, messageId: id } },
       create: { instanceId: this.id, messageId: id, content: message as object },
@@ -308,18 +329,17 @@ class BaileysInstance extends EventEmitter {
     let state, saveCreds, version
     try {
       ;({ state, saveCreds } = await useDbAuthState(this.id))
-      ;({ version } = await fetchLatestBaileysVersion())
+      ;({ version } = await getBaileysVersion())
     } finally {
       this.connecting = false
     }
 
-    // Clean up message store entries older than 7 days on every connect
-    prisma.baileysMessageStore.deleteMany({
-      where: {
-        instanceId: this.id,
-        createdAt: { lt: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000) },
-      },
-    }).catch(() => {})
+    // Start periodic cleanup of old message store rows (runs every 24 h while
+    // connected). Doing this on a timer — not only on connect() — ensures long-
+    // lived sessions also prune stale rows without needing a reconnect.
+    if (this.cleanupTimer) clearInterval(this.cleanupTimer)
+    this._pruneMessageStore()
+    this.cleanupTimer = setInterval(() => this._pruneMessageStore(), 24 * 60 * 60 * 1000)
 
     const sock = makeWASocket({
       version,
@@ -340,9 +360,7 @@ class BaileysInstance extends EventEmitter {
       placeholderResendCache: this.placeholderResendCache,
       getMessage: async (key) => {
         if (!key.id) return undefined
-        const cached = this.messageStore.get(key.id)
-        if (cached) return cached
-        // Fallback to DB — covers messages from before server restart
+        // DB is the single source of truth — no in-memory fallback needed.
         try {
           const row = await prisma.baileysMessageStore.findUnique({
             where: { instanceId_messageId: { instanceId: this.id, messageId: key.id } },
@@ -446,11 +464,27 @@ class BaileysInstance extends EventEmitter {
     sock.ev.on('call', (data) => this._fireWebhook('call', data))
   }
 
+  private _pruneMessageStore() {
+    // Keep 7 days of outbound message content — enough for any WhatsApp retry
+    // window. Rows older than this are unreachable by the retry protocol and
+    // only cost storage space.
+    prisma.baileysMessageStore.deleteMany({
+      where: {
+        instanceId: this.id,
+        createdAt: { lt: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000) },
+      },
+    }).catch(() => {})
+  }
+
   // Close socket for sleep — does NOT clear Postgres auth state (preserves session for wake-up)
   softDisconnect() {
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer)
       this.reconnectTimer = null
+    }
+    if (this.cleanupTimer) {
+      clearInterval(this.cleanupTimer)
+      this.cleanupTimer = null
     }
     if (this.sock) {
       try { this.sock.end(undefined) } catch (_) {}
@@ -464,6 +498,10 @@ class BaileysInstance extends EventEmitter {
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer)
       this.reconnectTimer = null
+    }
+    if (this.cleanupTimer) {
+      clearInterval(this.cleanupTimer)
+      this.cleanupTimer = null
     }
     if (this.sock) {
       try { this.sock.end(undefined) } catch (_) {}
