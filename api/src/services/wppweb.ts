@@ -9,6 +9,7 @@ import wwebPkg from 'whatsapp-web.js'
 import { toDataURL } from 'qrcode'
 import { EventEmitter } from 'events'
 import path from 'path'
+import fs from 'fs'
 import { prisma } from '../db.js'
 import { askGemini } from './gemini.js'
 import { decodeQRCode } from './qrcode-reader.js'
@@ -248,9 +249,23 @@ class WppwebInstance extends EventEmitter {
       .catch((err) => {
         console.error(`[wppweb] initialize error ${this.id}`, err)
         this.client = null
+        this._clearChromiumLocks()
         setTimeout(() => this.connect(), 5000)
       })
       .finally(() => { this.starting = false })
+  }
+
+  private _clearChromiumLocks(): void {
+    const sessionDir = path.join(AUTH_PATH, `session-${this.id}`)
+    try {
+      for (const name of ['SingletonLock', 'SingletonCookie', 'SingletonSocket']) {
+        const f = path.join(sessionDir, name)
+        if (fs.existsSync(f)) fs.unlinkSync(f)
+      }
+      console.log(`[wppweb] cleared Chromium locks for ${this.id}`)
+    } catch (e) {
+      console.error(`[wppweb] failed to clear Chromium locks for ${this.id}`, e)
+    }
   }
 
   async requestPairingCode(phoneNumber: string): Promise<string> {
