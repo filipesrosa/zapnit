@@ -1,10 +1,19 @@
 import type { FastifyInstance } from 'fastify'
 import { randomBytes } from 'crypto'
-import { wppwebManager, WEBHOOK_EVENTS } from '../services/wppweb.js'
+import { mgr, WEBHOOK_EVENTS } from '../services/wppweb.js'
+import { baileysManager } from '../services/baileys.js'
 import { authenticateUser } from '../middleware/auth.js'
 import { prisma } from '../db.js'
 import { qrMessagesQueue } from '../queues.js'
 import { getTrialWatermark } from '../services/systemConfig.js'
+
+// To revert: set WPPWEB_USE_BAILEYS=false (or remove it) and rebuild.
+const USE_BAILEYS = process.env.WPPWEB_USE_BAILEYS === 'true'
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const mgr: any = USE_BAILEYS ? baileysManager : mgr
+const jobInstanceType = USE_BAILEYS ? 'baileys' : 'wppweb'
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const msgTable: any = USE_BAILEYS ? prisma.baileysMessage : msgTable
 
 interface Params { id: string }
 interface SendBody { phone: string; message: string }
@@ -57,7 +66,7 @@ export default async function wppwebRoutes(app: FastifyInstance) {
         return reply.status(401).send({ error: 'X-Client-Token ausente' })
       }
 
-      const result = await wppwebManager.getByUserToken(req.params.id, clientToken)
+      const result = await mgr.getByUserToken(req.params.id, clientToken)
       if (!result) return reply.status(401).send({ error: 'Token inválido ou instância não encontrada' })
       const { instance, userId } = result
 
@@ -69,13 +78,13 @@ export default async function wppwebRoutes(app: FastifyInstance) {
       const watermark = isTrial ? await getTrialWatermark() : ''
       const message = isTrial ? `${watermark}\n\n${req.body.message}` : req.body.message
 
-      const record = await prisma.wppwebMessage.create({
+      const record = await msgTable.create({
         data: { userId, instanceId: req.params.id, messageId: null, ip: req.ip ?? null, status: 'queued' },
       })
 
       await qrMessagesQueue.add('send', {
         zapnitId: record.id, instanceId: req.params.id, userId,
-        instanceType: 'wppweb', sendType: 'text',
+        instanceType: jobInstanceType, sendType: 'text',
         phone: req.body.phone, message,
       })
 
@@ -103,7 +112,7 @@ export default async function wppwebRoutes(app: FastifyInstance) {
     async (req, reply) => {
       const clientToken = req.headers['x-client-token']
       if (!clientToken || typeof clientToken !== 'string') return reply.status(401).send({ error: 'X-Client-Token ausente' })
-      const result = await wppwebManager.getByUserToken(req.params.id, clientToken)
+      const result = await mgr.getByUserToken(req.params.id, clientToken)
       if (!result) return reply.status(401).send({ error: 'Token inválido ou instância não encontrada' })
       const { instance, userId } = result
 
@@ -121,13 +130,13 @@ export default async function wppwebRoutes(app: FastifyInstance) {
         ? `${watermark}\n\n${req.body.caption ?? ''}`.trim()
         : req.body.caption
 
-      const record = await prisma.wppwebMessage.create({
+      const record = await msgTable.create({
         data: { userId, instanceId: req.params.id, messageId: null, ip: req.ip ?? null, status: 'queued' },
       })
 
       await qrMessagesQueue.add('send', {
         zapnitId: record.id, instanceId: req.params.id, userId,
-        instanceType: 'wppweb', sendType: 'image',
+        instanceType: jobInstanceType, sendType: 'image',
         phone: req.body.phone, mediaUrl: req.body.mediaUrl, mediaBase64: req.body.mediaBase64, caption,
       })
 
@@ -156,7 +165,7 @@ export default async function wppwebRoutes(app: FastifyInstance) {
     async (req, reply) => {
       const clientToken = req.headers['x-client-token']
       if (!clientToken || typeof clientToken !== 'string') return reply.status(401).send({ error: 'X-Client-Token ausente' })
-      const result = await wppwebManager.getByUserToken(req.params.id, clientToken)
+      const result = await mgr.getByUserToken(req.params.id, clientToken)
       if (!result) return reply.status(401).send({ error: 'Token inválido ou instância não encontrada' })
       const { instance, userId } = result
 
@@ -168,13 +177,13 @@ export default async function wppwebRoutes(app: FastifyInstance) {
         return reply.status(400).send({ error: 'Informe mediaUrl ou mediaBase64' })
       }
 
-      const record = await prisma.wppwebMessage.create({
+      const record = await msgTable.create({
         data: { userId, instanceId: req.params.id, messageId: null, ip: req.ip ?? null, status: 'queued' },
       })
 
       await qrMessagesQueue.add('send', {
         zapnitId: record.id, instanceId: req.params.id, userId,
-        instanceType: 'wppweb', sendType: 'audio',
+        instanceType: jobInstanceType, sendType: 'audio',
         phone: req.body.phone, mediaUrl: req.body.mediaUrl, mediaBase64: req.body.mediaBase64,
         mimetype: req.body.mimetype, ptt: req.body.ptt,
       })
@@ -205,7 +214,7 @@ export default async function wppwebRoutes(app: FastifyInstance) {
     async (req, reply) => {
       const clientToken = req.headers['x-client-token']
       if (!clientToken || typeof clientToken !== 'string') return reply.status(401).send({ error: 'X-Client-Token ausente' })
-      const result = await wppwebManager.getByUserToken(req.params.id, clientToken)
+      const result = await mgr.getByUserToken(req.params.id, clientToken)
       if (!result) return reply.status(401).send({ error: 'Token inválido ou instância não encontrada' })
       const { instance, userId } = result
 
@@ -223,13 +232,13 @@ export default async function wppwebRoutes(app: FastifyInstance) {
         ? `${watermark}\n\n${req.body.caption ?? ''}`.trim()
         : req.body.caption
 
-      const record = await prisma.wppwebMessage.create({
+      const record = await msgTable.create({
         data: { userId, instanceId: req.params.id, messageId: null, ip: req.ip ?? null, status: 'queued' },
       })
 
       await qrMessagesQueue.add('send', {
         zapnitId: record.id, instanceId: req.params.id, userId,
-        instanceType: 'wppweb', sendType: 'document',
+        instanceType: jobInstanceType, sendType: 'document',
         phone: req.body.phone, mediaUrl: req.body.mediaUrl, mediaBase64: req.body.mediaBase64,
         filename: req.body.filename, caption, mimetype: req.body.mimetype,
       })
@@ -244,10 +253,10 @@ export default async function wppwebRoutes(app: FastifyInstance) {
     async (req, reply) => {
       const clientToken = req.headers['x-client-token']
       if (!clientToken || typeof clientToken !== 'string') return reply.status(401).send({ error: 'X-Client-Token ausente' })
-      const result = await wppwebManager.getByUserToken(req.params.id, clientToken)
+      const result = await mgr.getByUserToken(req.params.id, clientToken)
       if (!result) return reply.status(401).send({ error: 'Token inválido ou instância não encontrada' })
 
-      const msg = await prisma.wppwebMessage.findFirst({
+      const msg = await msgTable.findFirst({
         where: { id: req.params.zapnitId, instanceId: req.params.id },
       })
       if (!msg) return reply.status(404).send({ error: 'Message not found' })
@@ -262,7 +271,7 @@ export default async function wppwebRoutes(app: FastifyInstance) {
       return reply.status(401).send({ error: 'X-Client-Token ausente' })
     }
 
-    const result = await wppwebManager.getByUserToken(req.params.id, clientToken)
+    const result = await mgr.getByUserToken(req.params.id, clientToken)
     if (!result) return reply.status(401).send({ error: 'Token inválido ou instância não encontrada' })
 
     const { instance } = result
@@ -288,7 +297,7 @@ export default async function wppwebRoutes(app: FastifyInstance) {
     const user = await prisma.user.findUnique({ where: { id: userId } })
     if (!user) return reply.status(401).send({ error: 'Unauthorized' })
 
-    const instance = wppwebManager.getForUser(req.params.id, userId)
+    const instance = mgr.getForUser(req.params.id, userId)
     if (!instance) return reply.status(404).send({ error: 'Instância não encontrada' })
 
     const raw = reply.raw
@@ -345,17 +354,17 @@ export default async function wppwebRoutes(app: FastifyInstance) {
     auth.post('/wpp-instances', async (req, reply) => {
       const userId = req.authUser.id
       const id = generateWppId()
-      const instance = await wppwebManager.create(id, userId)
+      const instance = await mgr.create(id, userId)
       instance.connect()
       return reply.status(201).send(instance.info())
     })
 
     // GET /wpp-instances — listar instâncias do usuário
-    auth.get('/wpp-instances', async (req) => wppwebManager.allForUser(req.authUser.id))
+    auth.get('/wpp-instances', async (req) => mgr.allForUser(req.authUser.id))
 
     // GET /wpp-instances/:id/status
     auth.get<{ Params: Params }>('/wpp-instances/:id/status', async (req, reply) => {
-      const instance = wppwebManager.getForUser(req.params.id, req.authUser.id)
+      const instance = mgr.getForUser(req.params.id, req.authUser.id)
       if (!instance) return reply.status(404).send({ error: 'Instância não encontrada' })
       return instance.info()
     })
@@ -373,7 +382,7 @@ export default async function wppwebRoutes(app: FastifyInstance) {
         },
       },
       async (req, reply) => {
-        const instance = wppwebManager.getForUser(req.params.id, req.authUser.id)
+        const instance = mgr.getForUser(req.params.id, req.authUser.id)
         if (!instance) return reply.status(404).send({ error: 'Instância não encontrada' })
         try {
           const code = await instance.requestPairingCode(req.body.phone)
@@ -386,9 +395,9 @@ export default async function wppwebRoutes(app: FastifyInstance) {
 
     // DELETE /wpp-instances/:id — desconectar e remover
     auth.delete<{ Params: Params }>('/wpp-instances/:id', async (req, reply) => {
-      const instance = wppwebManager.getForUser(req.params.id, req.authUser.id)
+      const instance = mgr.getForUser(req.params.id, req.authUser.id)
       if (!instance) return reply.status(404).send({ error: 'Instância não encontrada' })
-      await wppwebManager.remove(req.params.id)
+      await mgr.remove(req.params.id)
       return reply.status(204).send()
     })
 
@@ -415,7 +424,7 @@ export default async function wppwebRoutes(app: FastifyInstance) {
         const invalid = req.body.events.filter(e => !(WEBHOOK_EVENTS as readonly string[]).includes(e))
         if (invalid.length) return reply.status(400).send({ error: `Eventos inválidos: ${invalid.join(', ')}` })
 
-        const instance = await wppwebManager.updateWebhook(req.params.id, req.authUser.id, req.body.url, req.body.events)
+        const instance = await mgr.updateWebhook(req.params.id, req.authUser.id, req.body.url, req.body.events)
         if (!instance) return reply.status(404).send({ error: 'Instância não encontrada' })
         return instance.info()
       }
@@ -423,7 +432,7 @@ export default async function wppwebRoutes(app: FastifyInstance) {
 
     // DELETE /wpp-instances/:id/webhook
     auth.delete<{ Params: Params }>('/wpp-instances/:id/webhook', async (req, reply) => {
-      const instance = await wppwebManager.updateWebhook(req.params.id, req.authUser.id, null, [])
+      const instance = await mgr.updateWebhook(req.params.id, req.authUser.id, null, [])
       if (!instance) return reply.status(404).send({ error: 'Instância não encontrada' })
       return reply.status(204).send()
     })
@@ -445,7 +454,7 @@ export default async function wppwebRoutes(app: FastifyInstance) {
         },
       },
       async (req, reply) => {
-        const instance = await wppwebManager.updateAi(
+        const instance = await mgr.updateAi(
           req.params.id,
           req.authUser.id,
           req.body.aiEnabled,
