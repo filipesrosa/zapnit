@@ -71,11 +71,11 @@ class TTLCache implements CacheStore {
 // reconnect cycles reuse the last known-good version instead of hitting the
 // network every time.
 // ---------------------------------------------------------------------------
-let _cachedVersion: { version: number[]; isLatest: boolean } | null = null
+let _cachedVersion: { version: [number, number, number]; isLatest: boolean } | null = null
 let _versionFetchedAt = 0
 const VERSION_CACHE_TTL_MS = 5 * 60 * 1000 // 5 minutes
 
-async function getBaileysVersion(): Promise<{ version: number[]; isLatest: boolean }> {
+async function getBaileysVersion(): Promise<{ version: [number, number, number]; isLatest: boolean }> {
   if (_cachedVersion && Date.now() - _versionFetchedAt < VERSION_CACHE_TTL_MS) {
     return _cachedVersion
   }
