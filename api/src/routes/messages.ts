@@ -2,6 +2,7 @@ import type { FastifyInstance } from 'fastify'
 import { prisma } from '../db.js'
 import { authenticate, checkQuota } from '../middleware/auth.js'
 import { messageQueue } from '../jobs/messageWorker.js'
+import { TEST_PREFIX } from '../lib/testPrefix.js'
 
 interface SendMessageBody {
   to: string
@@ -53,7 +54,8 @@ export default async function messagesRoutes(app: FastifyInstance): Promise<void
       }
     }
   }, async (req, reply) => {
-    const { to, message, phone_number_id, preview_url } = req.body
+    const { to, phone_number_id, preview_url } = req.body
+    const message = `${TEST_PREFIX}${req.body.message}`
     const { tenant } = req
 
     const phoneNumber = await prisma.phoneNumber.findFirst({
