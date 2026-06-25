@@ -1,6 +1,6 @@
 import type { FastifyInstance } from 'fastify'
 import { randomBytes } from 'crypto'
-import { mgr, WEBHOOK_EVENTS } from '../services/wppweb.js'
+import { wppwebManager, WEBHOOK_EVENTS } from '../services/wppweb.js'
 import { baileysManager } from '../services/baileys.js'
 import { authenticateUser } from '../middleware/auth.js'
 import { prisma } from '../db.js'
@@ -10,10 +10,10 @@ import { getTrialWatermark } from '../services/systemConfig.js'
 // To revert: set WPPWEB_USE_BAILEYS=false (or remove it) and rebuild.
 const USE_BAILEYS = process.env.WPPWEB_USE_BAILEYS === 'true'
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-const mgr: any = USE_BAILEYS ? baileysManager : mgr
+const mgr: any = USE_BAILEYS ? baileysManager : wppwebManager
 const jobInstanceType = USE_BAILEYS ? 'baileys' : 'wppweb'
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-const msgTable: any = USE_BAILEYS ? prisma.baileysMessage : msgTable
+const msgTable: any = USE_BAILEYS ? prisma.baileysMessage : prisma.wppwebMessage
 
 interface Params { id: string }
 interface SendBody { phone: string; message: string }
