@@ -8,8 +8,8 @@ echo "==> Atualizando branch homolog..."
 git pull origin homolog
 
 echo "==> Build e subindo containers QAS..."
-docker compose -f docker-compose.qas.yml build --no-cache
-docker compose -f docker-compose.qas.yml up -d
+docker compose -f docker-compose.qas.yml --env-file .env.qas build --no-cache
+docker compose -f docker-compose.qas.yml --env-file .env.qas up -d
 
 echo "==> Aguardando API ficar saudável..."
 for i in $(seq 1 15); do
