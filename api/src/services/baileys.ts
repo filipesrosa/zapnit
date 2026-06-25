@@ -751,6 +751,8 @@ class BaileysManager {
     if (!user) return undefined
     const instance = this.getForUser(id, user.id)
     if (!instance) return undefined
+    const row = await prisma.baileysInstance.findUnique({ where: { id }, select: { activationStatus: true } })
+    if (row) instance.activationStatus = row.activationStatus as ActivationStatus
     return { instance, userId: user.id }
   }
 
