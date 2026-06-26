@@ -4,6 +4,7 @@ import {
   DisconnectReason,
   fetchLatestBaileysVersion,
   downloadMediaMessage,
+  jidNormalizedUser,
   type WASocket,
   type ConnectionState,
   type CacheStore,
@@ -31,6 +32,10 @@ const silentLogger = pino({ level: 'silent' })
  * Used for msgRetryCounterCache / placeholderResendCache so that retry-receipt
  * state survives socket reconnections (the internal default cache is recreated
  * on every new socket, losing retry counts mid-flight).
+ *
+ * Also used as the injectable Signal key cache for makeCacheableSignalKeyStore,
+ * exposing `invalidatePrefix` so multi-device sync events can surgically evict
+ * stale session entries without a full socket reconnect.
  */
 class TTLCache implements CacheStore {
   private store = new Map<string, { value: unknown; expires: number }>()
@@ -61,6 +66,13 @@ class TTLCache implements CacheStore {
 
   flushAll(): void {
     this.store.clear()
+  }
+
+  /** Evict all entries whose key starts with `prefix`. */
+  invalidatePrefix(prefix: string): void {
+    for (const key of this.store.keys()) {
+      if (key.startsWith(prefix)) this.store.delete(key)
+    }
   }
 }
 
@@ -146,6 +158,10 @@ class BaileysInstance extends EventEmitter {
   // socket is recreated (the Baileys-internal default caches would be wiped).
   private readonly msgRetryCounterCache: CacheStore = new TTLCache(60 * 60 * 1000)
   private readonly placeholderResendCache: CacheStore = new TTLCache(60 * 60 * 1000)
+  // Injected into makeCacheableSignalKeyStore so we can surgically evict stale
+  // Signal sessions when another device (WA Web / phone) syncs a message to us.
+  // 5 min TTL mirrors the Baileys default (DEFAULT_CACHE_TTLS.SIGNAL_STORE = 300s).
+  private readonly signalCache = new TTLCache(5 * 60 * 1000)
 
   constructor(
     id: string,
@@ -346,16 +362,20 @@ class BaileysInstance extends EventEmitter {
       logger: silentLogger,
       auth: {
         creds: state.creds,
-        // Cache reads in memory so we never read a session file mid-write,
-        // which is the dominant cause of Signal session corruption (=> the
-        // recipient's permanent "Waiting for this message").
-        keys: makeCacheableSignalKeyStore(state.keys, silentLogger),
+        // Inject our own TTLCache so we can call invalidatePrefix() from the
+        // multi-device sync handler below. Without this, stale session entries
+        // linger in the default node-cache and cause "Waiting for this message"
+        // after WA Web / phone interaction with the same contacts.
+        keys: makeCacheableSignalKeyStore(state.keys, silentLogger, this.signalCache),
       },
       printQRInTerminal: false,
       // Headless gateway: stay "offline" so WhatsApp keeps routing message
       // notifications and retry receipts to this socket (and pushes to the
       // owner's phone), instead of treating us as the foreground device.
       markOnlineOnConnect: false,
+      // Disable full history sync — reduces orphan Signal sessions that form
+      // when history messages reference devices no longer in the key store.
+      syncFullHistory: false,
       msgRetryCounterCache: this.msgRetryCounterCache,
       placeholderResendCache: this.placeholderResendCache,
       getMessage: async (key) => {
@@ -436,6 +456,43 @@ class BaileysInstance extends EventEmitter {
         // so only those need to be retrievable by getMessage.
         if (msg.key.fromMe && msg.key.id && msg.message) this._storeMessage(msg.key.id, msg.message)
       }
+
+      // type='append' means messages synced from another linked device (WA Web,
+      // phone). When another device interacts with a contact, that contact's WA
+      // may reset or advance their Signal session state. Baileys' in-memory
+      // signalCache still holds the old session → next outbound send uses stale
+      // keys → recipient sees "Waiting for this message".
+      //
+      // Fix: evict the session from both cache and DB for those contacts.
+      // Baileys will fetch a fresh prekey bundle on the next send, establishing
+      // a new LID-aware session transparently.
+      //
+      // Recency guard: only act on messages sent within the last 5 minutes.
+      // On connect, WA replays historical messages as type='append' too — those
+      // have old timestamps and would otherwise cause mass session eviction,
+      // which triggers the "linked device syncing" notification on every reconnect.
+      if (data.type === 'append') {
+        const recentThreshold = Math.floor(Date.now() / 1000) - 5 * 60
+        const jids = new Set<string>()
+        for (const msg of data.messages) {
+          if (
+            msg.key.fromMe &&
+            msg.key.remoteJid &&
+            !msg.key.remoteJid.endsWith('@g.us') &&
+            Number(msg.messageTimestamp) > recentThreshold
+          ) {
+            jids.add(jidNormalizedUser(msg.key.remoteJid))
+          }
+        }
+        for (const jid of jids) {
+          const number = jid.split('@')[0]
+          this.signalCache.invalidatePrefix(`session.${number}`)
+          prisma.baileysAuthState.deleteMany({
+            where: { instanceId: this.id, category: 'session', keyId: { startsWith: number } },
+          }).catch(() => {})
+        }
+      }
+
       this._fireWebhook('messages.upsert', data)
 
       // Update lastActivityAt on inbound messages
@@ -509,6 +566,7 @@ class BaileysInstance extends EventEmitter {
     }
     this.status = 'disconnected'
     this.qrDataUrl = null
+    this.signalCache.flushAll()
     this._clearAuthState()
   }
 
@@ -542,7 +600,8 @@ class BaileysInstance extends EventEmitter {
 
   async sendText(to: string, text: string): Promise<string | undefined> {
     if (!this.sock || this.status !== 'connected') throw new Error('Instância não conectada')
-    const result = await this.sock.sendMessage(to, { text })
+    const jid = jidNormalizedUser(to)
+    const result = await this.sock.sendMessage(jid, { text })
     if (result?.key?.id && result?.message) this._storeMessage(result.key.id, result.message)
     return result?.key?.id ?? undefined
   }
@@ -578,9 +637,29 @@ class BaileysInstance extends EventEmitter {
         break
     }
 
-    const result = await this.sock.sendMessage(to, content)
+    const jid = jidNormalizedUser(to)
+    const result = await this.sock.sendMessage(jid, content)
     if (result?.key?.id && result?.message) this._storeMessage(result.key.id, result.message)
     return result?.key?.id ?? undefined
+  }
+
+  /**
+   * Flush all Signal sessions from DB then reconnect.
+   *
+   * Fixes the LID migration problem: existing sessions are keyed to PN
+   * (phone number) but WhatsApp now routes Signal via LID. Clearing forces
+   * Baileys to re-fetch fresh prekey bundles on the next send — those bundles
+   * are LID-aware in 6.17.x, so new sessions encrypt correctly.
+   *
+   * Does NOT clear credentials — the instance stays logged in. Callers see
+   * a brief disconnected → connected transition (~2-5 s).
+   */
+  async flushSignalSessions(): Promise<void> {
+    this.softDisconnect()
+    await prisma.baileysAuthState.deleteMany({
+      where: { instanceId: this.id, category: 'session' },
+    })
+    this.connectWithRetry()
   }
 
   info(): InstanceInfo {
@@ -754,6 +833,13 @@ class BaileysManager {
     const row = await prisma.baileysInstance.findUnique({ where: { id }, select: { activationStatus: true } })
     if (row) instance.activationStatus = row.activationStatus as ActivationStatus
     return { instance, userId: user.id }
+  }
+
+  async flushSignalSessions(id: string, userId: string): Promise<boolean> {
+    const instance = this.getForUser(id, userId)
+    if (!instance) return false
+    await instance.flushSignalSessions()
+    return true
   }
 
   async remove(id: string): Promise<void> {

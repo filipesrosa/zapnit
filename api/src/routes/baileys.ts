@@ -426,6 +426,16 @@ export default async function baileysRoutes(app: FastifyInstance) {
       }
     )
 
+    // POST /instances/:id/flush-sessions — clear stale Signal sessions (LID migration fix)
+    // Deletes all Signal session rows from DB then reconnects. Sessions are
+    // re-established fresh with LID-correct keys on the next send.
+    // Fixes "Waiting for this message" on all contacts after WhatsApp LID migration.
+    auth.post<{ Params: Params }>('/instances/:id/flush-sessions', async (req, reply) => {
+      const ok = await baileysManager.flushSignalSessions(req.params.id, req.authUser.id)
+      if (!ok) return reply.status(404).send({ error: 'Instância não encontrada' })
+      return reply.status(204).send()
+    })
+
     // DELETE /instances/:id/webhook — remover webhook
     auth.delete<{ Params: Params }>('/instances/:id/webhook', async (req, reply) => {
       const instance = await baileysManager.updateWebhook(req.params.id, req.authUser.id, null, [])
