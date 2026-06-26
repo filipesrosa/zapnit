@@ -1,5 +1,8 @@
 import type { FastifyInstance } from 'fastify'
-import { nanoid } from 'nanoid'
+import { customAlphabet } from 'nanoid'
+
+const generateInstanceId = customAlphabet('ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789', 32)
+const newInstanceId = () => `ZN-${generateInstanceId()}`
 import { baileysManager, WEBHOOK_EVENTS } from '../services/baileys.js'
 import { authenticateUser } from '../middleware/auth.js'
 import { prisma } from '../db.js'
@@ -373,7 +376,7 @@ export default async function baileysRoutes(app: FastifyInstance) {
     // POST /instances — criar e iniciar nova instância (trial 2 dias)
     auth.post('/instances', async (req, reply) => {
       const userId = req.authUser.id
-      const id = nanoid(12)
+      const id = newInstanceId()
       const instance = await baileysManager.create(id, userId)
       instance.connect().catch(err => app.log.error(err, 'baileys connect error'))
       return reply.status(201).send(instance.info())
